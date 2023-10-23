@@ -165,6 +165,7 @@ class TransformerEncoderLayerBase(nn.Module):
         x,
         encoder_padding_mask: Optional[Tensor],
         attn_mask: Optional[Tensor] = None,
+        kv_prefix = None,
     ):
         """
         Args:
@@ -194,10 +195,28 @@ class TransformerEncoderLayerBase(nn.Module):
         residual = x
         if self.normalize_before:
             x = self.self_attn_layer_norm(x)
+        x_key = x
+        x_value = x
+        if kv_prefix is not None:
+            x_key = torch.concat([kv_prefix, x], dim=0)
+            x_value = x_key
+            # tgt_len, src_len
+            if attn_mask is not None:
+                attn_mask = torch.cat(
+                    [attn_mask.new_zeros(attn_mask.size(0), kv_prefix.size(0)), attn_mask],
+                    dim=1
+                )
+            encoder_padding_mask = torch.cat(
+                [
+                    encoder_padding_mask.new_zeros(encoder_padding_mask.size(0), kv_prefix.size(0)),
+                    encoder_padding_mask
+                 ],
+                dim=1
+            )
         x, _ = self.self_attn(
             query=x,
-            key=x,
-            value=x,
+            key=x_key,
+            value=x_value,
             key_padding_mask=encoder_padding_mask,
             need_weights=False,
             attn_mask=attn_mask,

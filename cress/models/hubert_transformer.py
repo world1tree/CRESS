@@ -411,6 +411,53 @@ class HubertTransformerEncoder(FairseqEncoder):
             "src_lengths": [],
         }
 
+    def forward_x_cross_s(self, audio, audio_lengths, source, return_all_hiddens=False):
+        # 1. 首先对语音进行编码
+        s, s_encoder_padding_mask, input_lengths = self._get_hubert_features(audio, audio_lengths)
+        if self.subsampler is not None:
+            s, input_lengths = self.subsampler(s, input_lengths)
+            s_encoder_padding_mask = lengths_to_padding_mask(input_lengths)
+            s = s.transpose(0, 1)  # T x B x C -> B x T x C
+        else:
+            s = self.dim_proj(s)
+        if self.layernorm_embedding is not None:
+            s = self.layernorm_embedding(s)
+        s = self.dropout_module(s)
+        # T x B x C
+        s = s.transpose(0, 1)
+
+        # 2. 对文本编码
+        x_encoder_padding_mask = source.eq(self.padding_idx)
+        has_pads = source.device.type == "xla" or x_encoder_padding_mask.any()
+        x, _ = self.forward_embedding(source)
+        if has_pads:
+            x = x * (1 - x_encoder_padding_mask.unsqueeze(-1).type_as(x))
+
+        encoder_embedding = x
+        x = x.transpose(0, 1)  # B x T x C -> T x B x C
+
+        encoder_states = []
+        if return_all_hiddens:
+            encoder_states.append(x)
+
+        # 对文本编码的时候参考语音
+        for layer in self.transformer_layers:
+            x = layer(x, x_encoder_padding_mask, kv_prefix=s)
+            if return_all_hiddens:
+                encoder_states.append(x)
+
+        if self.layer_norm is not None:
+            x = self.layer_norm(x)
+
+        return {
+            "encoder_out": [x],  # T x B x C
+            "encoder_padding_mask": [x_encoder_padding_mask],  # B x T
+            "encoder_embedding": [encoder_embedding],  # B x T x C
+            "encoder_states": encoder_states,  # List[T x B x C]
+            "src_tokens": [],
+            "src_lengths": [],
+        }
+
     def forward(self, src_tokens, src_lengths, mode, return_all_hiddens=False):
         x = self._forward(
             src_tokens, src_lengths, mode, return_all_hiddens=return_all_hiddens
