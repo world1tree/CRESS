@@ -235,6 +235,7 @@ class SpeechAndTextTranslationTask(LegacyFairseqTask):
         is_train_split = split.startswith("train")
         concat_dataset = []
         assert self.args.st_training or self.args.ext_mt_training
+        # 此处只会有一种数据集
         if self.args.st_training:
             st_dataset = self.load_st_dataset(split, epoch)
             concat_dataset.append(ModalityDatasetItem(
@@ -253,6 +254,8 @@ class SpeechAndTextTranslationTask(LegacyFairseqTask):
                 self.args.max_tokens_text,
                 self.args.batch_size_text,
             ))
+
+        assert len(concat_dataset) == 1, "only one dataset is allowed"
         
         self.datasets[split] = MultiModalityDataset(concat_dataset)
     

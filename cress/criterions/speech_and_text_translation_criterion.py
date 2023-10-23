@@ -80,11 +80,13 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
 
         mode = sample["net_input"]["mode"]
         if mode == "st":
+            # st + mt
             if self.mt_finetune and self.training:
                 st_loss = self.forward_st(model, sample, reduce)
                 mt_loss = self.forward_mt(model, sample, reduce)
                 loss = st_loss + mt_loss
                 st_size = mt_size = sample_size = sample["ntokens"]
+            # st(dev or train only)
             else:
                 loss = st_loss = self.forward_st(model, sample, reduce)
                 st_size = sample_size = sample["ntokens"]

@@ -205,17 +205,21 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
 
     def __getitem__(self, index: int) -> SpeechAndTextTranslationDatasetItem:
         audio = self._get_source_audio(index)
+        # nop
         audio = self.pack_frames(audio)
 
         tokenized = self.get_tokenized_src_text(index)
+        # source没有添加特殊标记
         source = self.tgt_dict.encode_line(
             tokenized, add_if_not_exist=False, append_eos=False
         ).long()
 
         tokenized = self.get_tokenized_tgt_text(index)
+        # 正常target的末尾追加了eos标记
         target = self.tgt_dict.encode_line(
             tokenized, add_if_not_exist=False, append_eos=self.append_eos
         ).long()
+        # False
         if self.cfg.prepend_tgt_lang_tag:
             lang_tag_idx = self.get_lang_tag_idx(
                 self.tgt_langs[index], self.tgt_dict
@@ -245,6 +249,7 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
         indices = indices.index_select(0, order)
         frames = frames.index_select(0, order)
 
+        # source没有特殊标记，只有填充字符
         source = fairseq_data_utils.collate_tokens(
             [x.source for x in samples],
             self.tgt_dict.pad(),
@@ -257,6 +262,7 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
             [x.source.size(0) for x in samples], dtype=torch.long
         ).index_select(0, order)
 
+        # target结尾有一个eos标记
         target = fairseq_data_utils.collate_tokens(
             [x.target for x in samples],
             self.tgt_dict.pad(),
@@ -268,6 +274,7 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
         target_lengths = torch.tensor(
             [x.target.size(0) for x in samples], dtype=torch.long
         ).index_select(0, order)
+        # eos, ..., ...
         prev_output_tokens = fairseq_data_utils.collate_tokens(
             [x.target for x in samples],
             self.tgt_dict.pad(),
