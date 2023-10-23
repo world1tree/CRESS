@@ -124,13 +124,14 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             if self.mt_finetune and self.training:
                 st_loss, st_lprobs, st_target = self.forward_st(model, sample, reduce)
                 # mt_loss = self.forward_mt(model, sample, reduce)
-                x_cross_s_loss, x_cross_s_lprobs, mt_target = self.forward_x_cross_s(model, sample, reduce)
+                mt_loss, x_cross_s_lprobs, mt_target = self.forward_x_cross_s(model, sample, reduce)
                 jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx)
-                loss = st_loss + x_cross_s_loss + jsd_loss
+                loss = st_loss + mt_loss + jsd_loss
                 st_size = mt_size = sample_size = sample["ntokens"]
             # st(dev or train only)
             else:
-                loss = st_loss = self.forward_st(model, sample, reduce)
+                st_loss, _, _ = self.forward_st(model, sample, reduce)
+                loss = st_loss
                 st_size = sample_size = sample["ntokens"]
         elif mode == "ext_mt":
             loss = ext_mt_loss = self.forward_ext_mt(model, sample, reduce)
