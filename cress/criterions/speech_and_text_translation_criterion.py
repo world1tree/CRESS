@@ -85,8 +85,8 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "prev_output_tokens": sample["net_input"]["prev_output_tokens"],
         }
         text_output = model(**text_input)
-        loss, _ = self.compute_loss(model, text_output, sample, reduce=reduce)
-        return loss
+        loss, _, lprobs, target = self.compute_loss_with_lprobs(model, text_output, sample, reduce=reduce)
+        return loss, lprobs, target
 
     def forward_x_cross_s(self, model, sample, reduce):
         text_input = {
@@ -123,9 +123,8 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             # st + mt
             if self.mt_finetune and self.training:
                 st_loss, st_lprobs, st_target = self.forward_st(model, sample, reduce)
-                # mt_loss = self.forward_mt(model, sample, reduce)
-                mt_loss, x_cross_s_lprobs, mt_target = self.forward_x_cross_s(model, sample, reduce)
-                jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx)
+                mt_loss, mt_lprbs, mt_target = self.forward_mt(model, sample, reduce)
+                jsd_loss = self.compute_jsd_loss(st_lprobs, mt_lprbs, st_target, mt_target, self.padding_idx)
                 loss = st_loss + mt_loss + jsd_loss
                 st_size = mt_size = sample_size = sample["ntokens"]
             # st(dev or train only)
