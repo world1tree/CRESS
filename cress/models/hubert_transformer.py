@@ -447,13 +447,15 @@ class HubertTransformerEncoder(FairseqEncoder):
             encoder_states.append(x)
 
         # 对文本编码的时候参考语音
-        for layer in self.transformer_layers[:4]:
-            x = layer(x, x_encoder_padding_mask, kv_prefix=None)
-            if return_all_hiddens:
-                encoder_states.append(x)
+        # for layer in self.transformer_layers[:4]:
+        #     x = layer(x, x_encoder_padding_mask, kv_prefix=None)
+        #     if return_all_hiddens:
+        #         encoder_states.append(x)
 
-        for layer in self.transformer_layers[4:]:
-            x = layer(x, x_encoder_padding_mask, kv_prefix=s)
+        for layer in self.transformer_layers[:]:
+            # kv_prefix: T, B, D
+            # kv_padding: B, T
+            x = layer(x, x_encoder_padding_mask, kv_prefix=s, kv_padding=s_encoder_padding_mask)
             if return_all_hiddens:
                 encoder_states.append(x)
 

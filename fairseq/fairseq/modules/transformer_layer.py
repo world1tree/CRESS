@@ -166,6 +166,7 @@ class TransformerEncoderLayerBase(nn.Module):
         encoder_padding_mask: Optional[Tensor],
         attn_mask: Optional[Tensor] = None,
         kv_prefix = None,
+        kv_padding = None,
     ):
         """
         Args:
@@ -198,6 +199,9 @@ class TransformerEncoderLayerBase(nn.Module):
         x_key = x
         x_value = x
         if kv_prefix is not None:
+            # B, T, true代表填充
+            # print(encoder_padding_mask)
+            # T, B, D
             x_key = torch.concat([kv_prefix, x], dim=0)
             x_value = x_key
             # tgt_len, src_len
@@ -208,7 +212,8 @@ class TransformerEncoderLayerBase(nn.Module):
                 )
             encoder_padding_mask = torch.cat(
                 [
-                    encoder_padding_mask.new_zeros(encoder_padding_mask.size(0), kv_prefix.size(0)),
+                    # B, T_prefix
+                    kv_padding,
                     encoder_padding_mask
                  ],
                 dim=1
