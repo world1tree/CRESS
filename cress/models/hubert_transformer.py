@@ -379,7 +379,6 @@ class HubertTransformerEncoder(FairseqEncoder):
             else:
                 x = self.dim_proj(x)
             # 增加语音的位置编码
-            # encoder_padding_mask = lengths_to_padding_mask(input_lengths)
             # if self.embed_positions is not None:
             #     positions = self.embed_positions(encoder_padding_mask)
             #     x += positions
@@ -426,6 +425,10 @@ class HubertTransformerEncoder(FairseqEncoder):
             s = s.transpose(0, 1)  # T x B x C -> B x T x C
         else:
             s = self.dim_proj(s)
+        # 增加语音的位置编码
+        # if self.embed_positions is not None:
+        #     positions = self.embed_positions(s_encoder_padding_mask)
+        #     s += positions
         if self.layernorm_embedding is not None:
             s = self.layernorm_embedding(s)
         s = self.dropout_module(s)
