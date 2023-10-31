@@ -88,6 +88,58 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         loss, _ = self.compute_loss(model, text_output, sample, reduce=reduce)
         return loss
 
+    def forward_x_cross_s_mix(self, model, sample, reduce):
+        # x_cross_s
+        text_audio_input = {
+            "audio": sample["net_input"]["audio"],
+            "audio_lengths": sample["net_input"]["audio_lengths"],
+            "source": sample["net_input"]["source"],
+        }
+        x_cross_s_encoder_out = model.encoder.forward_x_cross_s(**text_audio_input)
+        # B, T, D
+        encoder_out_attend_s = x_cross_s_encoder_out["encoder_out"][0].transpose(0, 1)
+        # B, T
+        encoder_out_padding_mask = x_cross_s_encoder_out["encoder_padding_mask"][0]
+        encoder_embedding = x_cross_s_encoder_out["encoder_embedding"][0]
+
+        # normal mt
+        text_input = {
+            "src_tokens": sample["net_input"]["source"],
+            "src_lengths": sample["net_input"]["source_lengths"],
+            "mode": "mt",
+        }
+        mt_encoder_ouput = model.encoder(**text_input)
+        # B, T, D
+        encoder_out_origin = mt_encoder_ouput["encoder_out"][0].transpose(0, 1)
+
+        # get random mix ratio
+        bsz, text_len, emb_dim = encoder_out_origin.size()
+        # p = 0.5 means 50% of the time we use encoder_out_origin
+        probability_matrix = torch.full((bsz, ), 0.3, device=encoder_out_origin.device)
+        selected_index = torch.bernoulli(probability_matrix).bool().to(encoder_out_origin.device)
+
+        # get mix encoder_out
+        mix_encoder_out = torch.zeros((bsz, text_len, emb_dim), device=encoder_out_origin.device)
+        mix_encoder_out[selected_index] = encoder_out_origin[selected_index]
+        mix_encoder_out[~selected_index] = encoder_out_attend_s[~selected_index]
+        mix_encoder_out = mix_encoder_out.transpose(0, 1)
+
+        encoder_out = {
+            "encoder_out": [mix_encoder_out],  # T x B x C
+            "encoder_padding_mask": [encoder_out_padding_mask],  # B x T
+            "encoder_embedding": [encoder_embedding],  # B x T x C
+            "encoder_states": [],  # List[T x B x C]
+            "src_tokens": [],
+            "src_lengths": [],
+        }
+
+        prev_output_tokens = sample["net_input"]["prev_output_tokens"]
+        decoder_out = model.decoder(
+            prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
+        )
+        loss, _, lprobs, target = self.compute_loss_with_lprobs(model, decoder_out, sample, reduce=reduce)
+        return loss, lprobs, target
+
     def forward_x_cross_s(self, model, sample, reduce):
         text_input = {
             "audio": sample["net_input"]["audio"],
@@ -124,7 +176,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             if self.mt_finetune and self.training:
                 st_loss, st_lprobs, st_target = self.forward_st(model, sample, reduce)
                 # mt_loss = self.forward_mt(model, sample, reduce)
-                mt_loss, x_cross_s_lprobs, mt_target = self.forward_x_cross_s(model, sample, reduce)
+                mt_loss, x_cross_s_lprobs, mt_target = self.forward_x_cross_s_mix(model, sample, reduce)
                 jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx)
                 loss = st_loss + mt_loss + jsd_loss
                 st_size = mt_size = sample_size = sample["ntokens"]
