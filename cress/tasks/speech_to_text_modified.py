@@ -10,9 +10,11 @@ from argparse import Namespace
 from fairseq.data import Dictionary, encoders
 from cress.datasets.speech_to_text_dataset import (
     S2TDataConfig,
-    SpeechToTextDataset,
-    SpeechToTextDatasetCreator,
     get_features_or_waveform,
+)
+from cress.datasets.speech_and_text_translation_dataset import (
+    SpeechAndTextTranslationDataset,
+    SpeechAndTextTranslationDatasetCreator,
 )
 from fairseq.tasks import LegacyFairseqTask, register_task
 
@@ -98,7 +100,7 @@ class SpeechToTextTaskModified(LegacyFairseqTask):
         is_train_split = split.startswith("train")
         pre_tokenizer = self.build_tokenizer(self.args)
         bpe_tokenizer = self.build_bpe(self.args)
-        self.datasets[split] = SpeechToTextDatasetCreator.from_tsv(
+        self.datasets[split] = SpeechAndTextTranslationDatasetCreator.from_tsv(
             self.args.data,
             self.data_cfg,
             split,
@@ -143,7 +145,7 @@ class SpeechToTextTaskModified(LegacyFairseqTask):
         lang_token_ids = {
             i
             for s, i in self.tgt_dict.indices.items()
-            if SpeechToTextDataset.is_lang_tag(s)
+            if SpeechAndTextTranslationDataset.is_lang_tag(s)
         }
 
         if extra_gen_cls_kwargs is None:
@@ -181,6 +183,6 @@ class SpeechToTextTaskModified(LegacyFairseqTask):
         return lines, n_frames
 
     def build_dataset_for_inference(self, src_tokens, src_lengths, **kwargs):
-        return SpeechToTextDataset(
+        return SpeechAndTextTranslationDataset(
             "interactive", False, self.data_cfg, src_tokens, src_lengths
         )
