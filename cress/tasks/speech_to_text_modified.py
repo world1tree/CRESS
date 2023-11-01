@@ -3,6 +3,7 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+import torch
 import logging
 from pathlib import Path
 from argparse import Namespace
@@ -186,3 +187,28 @@ class SpeechToTextTaskModified(LegacyFairseqTask):
         return SpeechAndTextTranslationDataset(
             "interactive", False, self.data_cfg, src_tokens, src_lengths
         )
+
+    def inference_step(
+            self, generator, models, sample, prefix_tokens=None, constraints=None
+    ):
+        if getattr(self.args, "debug_task", "st") == "st" and "audio" in sample["net_input"]:
+            net_input = {
+                "src_tokens": sample["net_input"]["audio"],
+                "src_lengths": sample["net_input"]["audio_lengths"],
+                "mode": "st",
+                "prev_output_tokens": sample["net_input"]["prev_output_tokens"],
+            }
+            sample["net_input"] = net_input
+        elif getattr(self.args, "debug_task", "st") == "mt":
+            net_input = {
+                "src_tokens": sample["net_input"]["source"],
+                "src_lengths": sample["net_input"]["source_lengths"],
+                "mode": "mt",
+                "prev_output_tokens": sample["net_input"]["prev_output_tokens"],
+            }
+            sample["net_input"] = net_input
+
+        with torch.no_grad():
+            return generator.generate(
+                models, sample, prefix_tokens=prefix_tokens, constraints=constraints
+            )
