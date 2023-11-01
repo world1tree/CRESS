@@ -195,6 +195,7 @@ class SpeechToTextTaskModified(LegacyFairseqTask):
             net_input = {
                 "src_tokens": sample["net_input"]["audio"],
                 "src_lengths": sample["net_input"]["audio_lengths"],
+                "source": sample["net_input"]["source"],
                 "mode": "st",
                 "prev_output_tokens": sample["net_input"]["prev_output_tokens"],
             }
