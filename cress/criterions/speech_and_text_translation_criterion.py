@@ -115,6 +115,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         3) logging outputs to display while training
         """
         st_loss, mt_loss, ext_mt_loss = torch.Tensor([0]).cuda(), torch.Tensor([0]).cuda(), torch.Tensor([0]).cuda()
+        mt_loss_origin = torch.Tensor([0]).cuda()
         jsd_loss = torch.Tensor([0]).cuda()
         st_size, mt_size, ext_mt_size = 0, 0, 0
 
@@ -123,10 +124,10 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             # st + mt
             if self.mt_finetune and self.training:
                 st_loss, st_lprobs, st_target = self.forward_st(model, sample, reduce)
-                # mt_loss = self.forward_mt(model, sample, reduce)
+                mt_loss_origin = self.forward_mt(model, sample, reduce)
                 mt_loss, x_cross_s_lprobs, mt_target = self.forward_x_cross_s(model, sample, reduce)
-                jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx)
-                loss = st_loss + mt_loss + jsd_loss
+                # jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx)
+                loss = st_loss + mt_loss + mt_loss_origin
                 st_size = mt_size = sample_size = sample["ntokens"]
             # st(dev or train only)
             else:
