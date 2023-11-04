@@ -152,7 +152,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
 
         encoder_out_origin = x_encoder["encoder_out"][0].transpose(0, 1)
 
-        mix_encoder_out = torch.zeros((bsz, text_len, emb_dim), device=encoder_out_origin.device)
+        mix_encoder_out = torch.zeros((bsz, text_len, emb_dim), device=encoder_out_origin.device, dtype=encoder_out_origin.dtype)
         mix_encoder_out[selected_index] = encoder_out_origin[selected_index]
         mix_encoder_out[~selected_index] = encoder_out_attend_s[~selected_index]
         mix_encoder_out = mix_encoder_out.transpose(0, 1)
@@ -255,6 +255,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         jsd_loss = torch.Tensor([0]).cuda()
         st_size, mt_size, ext_mt_size = 0, 0, 0
         bsz_x_cross_s = 0
+        batch_size = 0
 
         mode = sample["net_input"]["mode"]
         if mode == "st":
@@ -266,6 +267,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx)
                 loss = st_loss + mt_loss + jsd_loss
                 st_size = mt_size = sample_size = sample["ntokens"]
+                batch_size = sample["target"].size(0)
             # st(dev or train only)
             else:
                 st_loss, _, _ = self.forward_st(model, sample, reduce)
@@ -288,6 +290,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "nsentences": sample["target"].size(0),
             "bsz_x_cross_s": bsz_x_cross_s.data,
             "sample_size": sample_size,
+            "batch_size": batch_size,
         }
         
         return loss, sample_size, logging_output
@@ -302,6 +305,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         sample_size = sum(log.get("sample_size", 0) for log in logging_outputs)
         bsz_x_cross_s = sum(log.get("bsz_x_cross_s", 0) for log in logging_outputs)
         st_sample_size = sum(log.get("st_sample_size", 0) for log in logging_outputs)
+        batch_size = sum(log.get("batch_size", 0) for log in logging_outputs)
         mt_sample_size = sum(log.get("mt_sample_size", 0) for log in logging_outputs)
         ext_mt_sample_size = sum(log.get("ext_mt_sample_size", 0) for log in logging_outputs)
         jsd_loss_sum = sum(log.get("jsd_loss", 0) for log in logging_outputs)
@@ -322,7 +326,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "ext_mt_loss", ext_mt_loss_sum / ext_mt_sample_size / math.log(2) if ext_mt_sample_size != 0 else 0, ext_mt_sample_size, round=3
         )
         metrics.log_scalar(
-            "bsz_x_cross_s", bsz_x_cross_s / mt_sample_size if mt_sample_size != 0 else 0, mt_sample_size, round=3
+            "bsz_x_cross_s", bsz_x_cross_s / batch_size if batch_size != 0 else 0, batch_size, round=3
         )
 
     @staticmethod
