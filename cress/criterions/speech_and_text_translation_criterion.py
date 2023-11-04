@@ -254,7 +254,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         st_loss, mt_loss, ext_mt_loss = torch.Tensor([0]).cuda(), torch.Tensor([0]).cuda(), torch.Tensor([0]).cuda()
         jsd_loss = torch.Tensor([0]).cuda()
         st_size, mt_size, ext_mt_size = 0, 0, 0
-        bsz_x_cross_s = 0
+        bsz_x_cross_s = torch.tensor(0.)
         batch_size = 0
 
         mode = sample["net_input"]["mode"]
