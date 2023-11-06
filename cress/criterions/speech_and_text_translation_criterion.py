@@ -66,41 +66,70 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         kl_loss = (kl_loss_st + kl_loss_mt) / 2.0
         return kl_loss
 
+    def compute_kl_loss(self, st_lprobs, mt_lprobs, concat_lprobs, target, ignore_index):
+        kl_loss_st = F.kl_div(st_lprobs, concat_lprobs, log_target=True, reduction="none").sum(-1)
+        kl_loss_mt = F.kl_div(mt_lprobs, concat_lprobs, log_target=True, reduction="none").sum(-1)
+        pad_mask = target.eq(ignore_index)
+        kl_loss_st.masked_fill_(pad_mask, 0.0)
+        kl_loss_mt.masked_fill_(pad_mask, 0.0)
+        kl_loss_st = kl_loss_st.sum()
+        kl_loss_mt = kl_loss_mt.sum()
+        kl_loss = kl_loss_st + kl_loss_mt
+        return kl_loss
+
+    def compute_mse_loss(self, encoder_audio_output, encoder_text_output, encoder_concat_output, concat_mask):
+        concat_no_context = torch.concat([encoder_audio_output, encoder_text_output], dim=0)
+        mse_loss = F.mse_loss(concat_no_context, encoder_concat_output, reduction="none")
+        mse_loss = mse_loss.transpose(0, 1)
+        mse_loss.masked_fill_(concat_mask.unsqueeze(-1), 0.0)
+        mse_loss = mse_loss.sum()
+        return mse_loss
+
     def forward_st(self, model, sample, reduce):
         audio_input = {
             "src_tokens": sample["net_input"]["audio"],
             "src_lengths": sample["net_input"]["audio_lengths"],
             "mode": "st",
-            "prev_output_tokens": sample["net_input"]["prev_output_tokens"],
         }
-        audio_output = model(**audio_input)
+        encoder_out = model.encoder(**audio_input)
+        encoder_audio_output = encoder_out["encoder_out"][0]
+        prev_output_tokens = sample["net_input"]["prev_output_tokens"]
+        audio_output = model.decoder(
+            prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
+        )
         loss, _, lprobs, target = self.compute_loss_with_lprobs(model, audio_output, sample, reduce=reduce)
-        return loss, lprobs, target
+        return loss, lprobs, target, encoder_audio_output
     
     def forward_mt(self, model, sample, reduce):
         text_input = {
             "src_tokens": sample["net_input"]["source"],
             "src_lengths": sample["net_input"]["source_lengths"],
             "mode": "mt",
-            "prev_output_tokens": sample["net_input"]["prev_output_tokens"],
         }
-        text_output = model(**text_input)
-        loss, _ = self.compute_loss(model, text_output, sample, reduce=reduce)
-        return loss
+        encoder_out = model.encoder(**text_input)
+        encoder_text_output = encoder_out["encoder_out"][0]
+        prev_output_tokens = sample["net_input"]["prev_output_tokens"]
+        text_output = model.decoder(
+            prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
+        )
+        loss, _, lprobs, target = self.compute_loss_with_lprobs(model, text_output, sample, reduce=reduce)
+        return loss, lprobs, target, encoder_text_output
 
-    def forward_x_cross_s(self, model, sample, reduce):
+    def forward_s_concat_x(self, model, sample, reduce):
         text_input = {
             "audio": sample["net_input"]["audio"],
             "audio_lengths": sample["net_input"]["audio_lengths"],
             "source": sample["net_input"]["source"],
         }
         prev_output_tokens = sample["net_input"]["prev_output_tokens"]
-        encoder_out = model.encoder.forward_x_cross_s(**text_input)
+        encoder_out = model.encoder.forward_s_concat_x(**text_input)
+        encoder_concat_output = encoder_out["encoder_out"][0]
+        encoder_concat_mask = encoder_out["encoder_padding_mask"][0]
         decoder_out = model.decoder(
             prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
         )
         loss, _, lprobs, target = self.compute_loss_with_lprobs(model, decoder_out, sample, reduce=reduce)
-        return loss, lprobs, target
+        return loss, lprobs, target, encoder_concat_output, encoder_concat_mask
 
     def forward_ext_mt(self, model, sample, reduce):
         text_output = model(**sample["net_input"])
@@ -114,19 +143,20 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         2) the sample size, which is used as the denominator for the gradient
         3) logging outputs to display while training
         """
-        st_loss, mt_loss, ext_mt_loss = torch.Tensor([0]).cuda(), torch.Tensor([0]).cuda(), torch.Tensor([0]).cuda()
-        jsd_loss = torch.Tensor([0]).cuda()
+        st_loss, mt_loss, ext_mt_loss = torch.Tensor([0]), torch.Tensor([0]), torch.Tensor([0])
+        concat_loss, mse_loss, kl_loss = torch.Tensor([0]), torch.Tensor([0]), torch.Tensor([0])
         st_size, mt_size, ext_mt_size = 0, 0, 0
 
         mode = sample["net_input"]["mode"]
         if mode == "st":
             # st + mt
             if self.mt_finetune and self.training:
-                st_loss, st_lprobs, st_target = self.forward_st(model, sample, reduce)
-                # mt_loss = self.forward_mt(model, sample, reduce)
-                mt_loss, x_cross_s_lprobs, mt_target = self.forward_x_cross_s(model, sample, reduce)
-                jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx)
-                loss = st_loss + mt_loss + jsd_loss
+                st_loss, st_lprobs, _, encoder_audio_output = self.forward_st(model, sample, reduce)
+                mt_loss, mt_lprobs, _, encoder_text_output = self.forward_mt(model, sample, reduce)
+                concat_loss, concat_lprobs, target, encoder_concat_output, concat_mask = self.forward_s_concat_x(model, sample, reduce)
+                kl_loss = self.compute_kl_loss(st_lprobs, mt_lprobs, concat_lprobs, target, self.padding_idx)
+                mse_loss = self.compute_mse_loss(encoder_audio_output, encoder_text_output, encoder_concat_output, concat_mask)
+                loss = st_loss + mt_loss + concat_loss + mse_loss + kl_loss
                 st_size = mt_size = sample_size = sample["ntokens"]
             # st(dev or train only)
             else:
@@ -143,7 +173,9 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "st_sample_size": st_size,
             "mt_loss": mt_loss.data,
             "mt_sample_size": mt_size,
-            "jsd_loss": jsd_loss.data,
+            "concat_loss": concat_loss.data,
+            "mse_loss": mse_loss.data,
+            "kl_loss": kl_loss.data,
             "ext_mt_loss": ext_mt_loss.data,
             "ext_mt_sample_size": ext_mt_size,
             "ntokens": sample["ntokens"],
@@ -164,7 +196,9 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         st_sample_size = sum(log.get("st_sample_size", 0) for log in logging_outputs)
         mt_sample_size = sum(log.get("mt_sample_size", 0) for log in logging_outputs)
         ext_mt_sample_size = sum(log.get("ext_mt_sample_size", 0) for log in logging_outputs)
-        jsd_loss_sum = sum(log.get("jsd_loss", 0) for log in logging_outputs)
+        concat_loss_sum = sum(log.get("concat_loss", 0) for log in logging_outputs)
+        mse_loss_sum = sum(log.get("mse_loss", 0) for log in logging_outputs)
+        kl_loss_sum = sum(log.get("kl_loss", 0) for log in logging_outputs)
 
         metrics.log_scalar(
             "loss", loss_sum / sample_size / math.log(2), sample_size, round=3
@@ -176,7 +210,13 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "mt_loss", mt_loss_sum / mt_sample_size / math.log(2) if mt_sample_size != 0 else 0, mt_sample_size, round=3
         )
         metrics.log_scalar(
-            "jsd_loss", jsd_loss_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
+            "concat_loss", concat_loss_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
+        )
+        metrics.log_scalar(
+            "mse_loss", mse_loss_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
+        )
+        metrics.log_scalar(
+            "kl_loss", kl_loss_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
         )
         metrics.log_scalar(
             "ext_mt_loss", ext_mt_loss_sum / ext_mt_sample_size / math.log(2) if ext_mt_sample_size != 0 else 0, ext_mt_sample_size, round=3

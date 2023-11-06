@@ -329,11 +329,13 @@ class HubertTransformerEncoder(FairseqEncoder):
         else:
             self.layernorm_embedding = None
         self.embed_positions = PositionalEmbedding(
-            args.max_source_positions,
-            # 4000000, # hard coded
+            # args.max_source_positions,
+            4000000, # hard coded
             args.encoder_embed_dim,
             self.padding_idx,
         )
+        # 只有两种类型，语音or文本
+        self.seq_type_positions = Embedding(2, args.encoder_embed_dim, self.padding_idx)
 
         # transformer encoder
         self.transformer_layers = nn.ModuleList(
@@ -416,7 +418,7 @@ class HubertTransformerEncoder(FairseqEncoder):
             "src_lengths": [],
         }
 
-    def forward_x_cross_s(self, audio, audio_lengths, source, return_all_hiddens=False):
+    def forward_s_concat_x(self, audio, audio_lengths, source, return_all_hiddens=False):
         # 1. 首先对语音进行编码
         s, s_encoder_padding_mask, input_lengths = self._get_hubert_features(audio, audio_lengths)
         if self.subsampler is not None:
@@ -442,32 +444,41 @@ class HubertTransformerEncoder(FairseqEncoder):
         if has_pads:
             x = x * (1 - x_encoder_padding_mask.unsqueeze(-1).type_as(x))
 
-        encoder_embedding = x
         x = x.transpose(0, 1)  # B x T x C -> T x B x C
+
+        # 3. 对文本和语音进行拼接
+        # B, T1+T2, C
+        s_concat_x = torch.concat([s, x], dim=0).transpose(0, 1)
+        encoder_embedding = s_concat_x
+        # B, T1+T2
+        s_concat_x_padding_mask = torch.concat([s_encoder_padding_mask, x_encoder_padding_mask], dim=1)
+        seq_pos = torch.concat([torch.zeros_like(s_encoder_padding_mask).to(torch.long), torch.ones_like(x_encoder_padding_mask).to(torch.long)], dim=1)
+        # 4. 类似bert, 对拼接后的embedding重新添加位置信息
+        if self.embed_positions is not None:
+            positions = self.embed_positions(s_concat_x_padding_mask)
+            s_concat_x += positions
+        if self.seq_type_positions is not None:
+            positions = self.seq_type_positions(seq_pos)
+            s_concat_x += positions
+        s_concat_x = s_concat_x.transpose(0, 1)
 
         encoder_states = []
         if return_all_hiddens:
-            encoder_states.append(x)
+            encoder_states.append(s_concat_x)
 
-        # 对文本编码的时候参考语音
-        # for layer in self.transformer_layers[:4]:
-        #     x = layer(x, x_encoder_padding_mask, kv_prefix=None)
-        #     if return_all_hiddens:
-        #         encoder_states.append(x)
-
-        for layer in self.transformer_layers[:]:
+        for layer in self.transformer_layers:
             # kv_prefix: T, B, D
             # kv_padding: B, T
-            x = layer(x, x_encoder_padding_mask, kv_prefix=s, kv_padding=s_encoder_padding_mask)
+            s_concat_x = layer(s_concat_x, s_concat_x_padding_mask)
             if return_all_hiddens:
-                encoder_states.append(x)
+                encoder_states.append(s_concat_x)
 
         if self.layer_norm is not None:
-            x = self.layer_norm(x)
+            s_concat_x = self.layer_norm(s_concat_x)
 
         return {
-            "encoder_out": [x],  # T x B x C
-            "encoder_padding_mask": [x_encoder_padding_mask],  # B x T
+            "encoder_out": [s_concat_x],  # T x B x C
+            "encoder_padding_mask": [s_concat_x_padding_mask],  # B x T
             "encoder_embedding": [encoder_embedding],  # B x T x C
             "encoder_states": encoder_states,  # List[T x B x C]
             "src_tokens": [],
