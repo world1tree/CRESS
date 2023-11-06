@@ -155,7 +155,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 mt_loss, mt_lprobs, _, encoder_text_output = self.forward_mt(model, sample, reduce)
                 concat_loss, concat_lprobs, target, encoder_concat_output, concat_mask = self.forward_s_concat_x(model, sample, reduce)
                 kl_loss = self.compute_kl_loss(st_lprobs, mt_lprobs, concat_lprobs, target, self.padding_idx)
-                mse_loss = self.compute_mse_loss(encoder_audio_output, encoder_text_output, encoder_concat_output, concat_mask)
+                mse_loss = 0.3 * self.compute_mse_loss(encoder_audio_output, encoder_text_output, encoder_concat_output, concat_mask)
                 loss = st_loss + mt_loss + concat_loss + mse_loss + kl_loss
                 st_size = mt_size = sample_size = sample["ntokens"]
             # st(dev or train only)
