@@ -115,7 +115,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         # get random mix ratio
         bsz, text_len, emb_dim = encoder_out_origin.size()
         # p = 0.5 means 50% of the time we use encoder_out_origin
-        probability_matrix = torch.full((bsz, ), 0.3, device=encoder_out_origin.device)
+        probability_matrix = torch.full((bsz, ), 0.3, device=encoder_out_origin.device, dtype=encoder_out_origin.dtype)
         selected_index = torch.bernoulli(probability_matrix).bool().to(encoder_out_origin.device)
 
         # get mix encoder_out
