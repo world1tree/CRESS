@@ -130,8 +130,6 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 jsd_cross_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, target, target, self.padding_idx)
                 jsd_mt_loss = self.compute_jsd_loss(st_lprobs, mt_lprobs, target, target, self.padding_idx)
                 loss = st_loss + mt_loss + mt_cross_loss + jsd_cross_loss + jsd_mt_loss
-                print(loss)
-                exit(0)
                 st_size = mt_size = sample_size = sample["ntokens"]
             # st(dev or train only)
             else:
