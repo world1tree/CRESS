@@ -356,7 +356,16 @@ class HubertTransformerEncoder(FairseqEncoder):
         x, padding_mask = self.hubert_model.extract_features(**hubert_args)
         output_length = (1 - padding_mask.int()).sum(dim=1)
         return x, padding_mask, output_length
-    
+
+    def forward_embedding_no_pos(
+            self, src_tokens, token_embedding: Optional[torch.Tensor] = None
+    ):
+        # embed tokens and positions
+        if token_embedding is None:
+            token_embedding = self.embed_tokens(src_tokens)
+        x = embed = self.embed_scale * token_embedding
+        return x, embed
+
     def forward_embedding(
         self, src_tokens, token_embedding: Optional[torch.Tensor] = None
     ):
@@ -431,16 +440,16 @@ class HubertTransformerEncoder(FairseqEncoder):
         # if self.embed_positions is not None:
         #     positions = self.embed_positions(s_encoder_padding_mask)
         #     s += positions
-        if self.layernorm_embedding is not None:
-            s = self.layernorm_embedding(s)
-        s = self.dropout_module(s)
+        # if self.layernorm_embedding is not None:
+        #     s = self.layernorm_embedding(s)
+        # s = self.dropout_module(s)
         # T x B x C
         s = s.transpose(0, 1)
 
         # 2. 对文本编码
         x_encoder_padding_mask = source.eq(self.padding_idx)
         has_pads = source.device.type == "xla" or x_encoder_padding_mask.any()
-        x, _ = self.forward_embedding(source)
+        x, _ = self.forward_embedding_no_pos(source)
         if has_pads:
             x = x * (1 - x_encoder_padding_mask.unsqueeze(-1).type_as(x))
 
@@ -460,6 +469,11 @@ class HubertTransformerEncoder(FairseqEncoder):
         if self.seq_type_positions is not None:
             positions = self.seq_type_positions(seq_pos)
             s_concat_x += positions
+        # 5. 加了位置信息后，需要进行一次layernorm和dropout
+        if self.layernorm_embedding is not None:
+            s_concat_x = self.layernorm_embedding(s_concat_x)
+        s_concat_x = self.dropout_module(s_concat_x)
+
         s_concat_x = s_concat_x.transpose(0, 1)
 
         encoder_states = []
