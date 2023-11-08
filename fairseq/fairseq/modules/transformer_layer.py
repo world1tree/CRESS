@@ -202,22 +202,12 @@ class TransformerEncoderLayerBase(nn.Module):
             # B, T, true代表填充
             # print(encoder_padding_mask)
             # T, B, D
-            x_key = torch.concat([kv_prefix, x], dim=0)
-            x_value = x_key
+            x_key = x_value = kv_prefix
             # tgt_len, src_len
             if attn_mask is not None:
-                attn_mask = torch.cat(
-                    [attn_mask.new_zeros(attn_mask.size(0), kv_prefix.size(0)), attn_mask],
-                    dim=1
-                )
-            encoder_padding_mask = torch.cat(
-                [
-                    # B, T_prefix
-                    kv_padding,
-                    encoder_padding_mask
-                 ],
-                dim=1
-            )
+                raise RuntimeError("shouldn't run here.")
+                attn_mask = attn_mask.new_zeros(attn_mask.size(0), kv_prefix.size(0))
+            encoder_padding_mask = kv_padding
         x, _ = self.self_attn(
             query=x,
             key=x_key,
