@@ -19,7 +19,7 @@ from fairseq.models import (
 )
 from fairseq.models.speech_to_text.hub_interface import S2THubInterface
 from fairseq.models.speech_to_text.s2t_transformer import Conv1dSubsampler, TransformerDecoderScriptable
-from fairseq.models.hubert import HubertModel
+from fairseq.models.wav2vec import Wav2Vec2Model
 from fairseq.models.transformer import Embedding
 from fairseq.modules import (
     FairseqDropout,
@@ -178,13 +178,13 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
         )
         # hubert arguments
         parser.add_argument(
-            "--hubert-model-path",
+            "--wav2vec-model-path",
             type=str,
             metavar="STR",
             help="path/to/hubert/model"
         )
         parser.add_argument(
-            "--freeze-hubert",
+            "--freeze-wav2vec",
             action="store_true",
             help="if we want to freeze the hubert features"
         )
@@ -294,32 +294,32 @@ class HubertTransformerEncoder(FairseqEncoder):
         self.padding_idx = dictionary.pad()
 
         # load hubert
-        self.hubert_model_path = getattr(args, "hubert_model_path", None)
-        self.freeze_hubert = getattr(args, "freeze_hubert", False)
-        assert self.hubert_model_path is not None
-        ckpt = checkpoint_utils.load_checkpoint_to_cpu(self.hubert_model_path)
-        hubert_args = ckpt["cfg"]
-        task = tasks.setup_task(hubert_args.task)
+        self.wav2vec_model_path = getattr(args, "wav2vec_model_path", None)
+        self.freeze_wav2vec = getattr(args, "freeze_wav2vec", False)
+        assert self.wav2vec_model_path is not None
+        ckpt = checkpoint_utils.load_checkpoint_to_cpu(self.wav2vec_model_path)
+        wav2vec_args = ckpt["cfg"]
+        task = tasks.setup_task(wav2vec_args.task)
         if "task_state" in ckpt:
             task.load_state_dict(ckpt["task_state"])
-        self.hubert_model = task.build_model(hubert_args.model)
-        self.hubert_model.load_state_dict(ckpt["model"])
-        self.hubert_model.remove_pretraining_modules()
-        if self.freeze_hubert:
+        self.wav2vec_model = task.build_model(wav2vec_args.model)
+        self.wav2vec_model.load_state_dict(ckpt["model"])
+        self.wav2vec_model.remove_pretraining_modules()
+        if self.freeze_wav2vec:
             for param in self.hubert_model.parameters():
                 param.requires_grad = False
-        
+
         # speech subsample
         if args.conv_kernel_sizes:
             self.subsampler = Conv1dSubsampler(
-                hubert_args.model.encoder_embed_dim,
+                wav2vec_args.model.encoder_embed_dim,
                 args.conv_channels,
                 args.encoder_embed_dim,
                 [int(k) for k in args.conv_kernel_sizes.split(",")],
             )
         else:
             self.subsampler = None
-            self.dim_proj = nn.Linear(hubert_args.model.encoder_embed_dim, args.encoder_embed_dim)
+            self.dim_proj = nn.Linear(wav2vec_args.model.encoder_embed_dim, args.encoder_embed_dim)
         
         # embedding
         self.embed_tokens = embed_tokens
@@ -344,14 +344,15 @@ class HubertTransformerEncoder(FairseqEncoder):
         else:
             self.layer_norm = None
 
-    def _get_hubert_features(self, src_tokens, src_lengths):
+    def _get_wav2vec_features(self, src_tokens, src_lengths):
         padding_mask = lengths_to_padding_mask(src_lengths)
-        hubert_args = {
+        wav2vec_args = {
             "source": src_tokens,
             "padding_mask": padding_mask,
             "mask": False,
         }
-        x, padding_mask = self.hubert_model.extract_features(**hubert_args)
+        features_dict = self.wav2vec_model.extract_features(**wav2vec_args)
+        x, padding_mask = features_dict["x"], features_dict["padding_mask"]
         output_length = (1 - padding_mask.int()).sum(dim=1)
         return x, padding_mask, output_length
     
@@ -371,7 +372,7 @@ class HubertTransformerEncoder(FairseqEncoder):
 
     def _forward(self, src_tokens, src_lengths, mode, return_all_hiddens=False):
         if mode == "st":
-            x, encoder_padding_mask, input_lengths = self._get_hubert_features(src_tokens, src_lengths)
+            x, encoder_padding_mask, input_lengths = self._get_wav2vec_features(src_tokens, src_lengths)
             if self.subsampler is not None:
                 x, input_lengths = self.subsampler(x, input_lengths)
                 encoder_padding_mask = lengths_to_padding_mask(input_lengths)
@@ -418,7 +419,7 @@ class HubertTransformerEncoder(FairseqEncoder):
 
     def forward_x_cross_s(self, audio, audio_lengths, source, return_all_hiddens=False):
         # 1. 首先对语音进行编码
-        s, s_encoder_padding_mask, input_lengths = self._get_hubert_features(audio, audio_lengths)
+        s, s_encoder_padding_mask, input_lengths = self._get_wav2vec_features(audio, audio_lengths)
         if self.subsampler is not None:
             s, input_lengths = self.subsampler(s, input_lengths)
             s_encoder_padding_mask = lengths_to_padding_mask(input_lengths)
