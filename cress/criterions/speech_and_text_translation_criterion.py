@@ -143,7 +143,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         st_loss, mt_loss, ext_mt_loss = torch.Tensor([0]), torch.Tensor([0]), torch.Tensor([0])
         mix_loss, jsd_loss = torch.Tensor([0]), torch.Tensor([0])
         st_size, mt_size, ext_mt_size = 0, 0, 0
-        total_num, text_num = 0, 0
+        text_percent = 0.0
 
         mode = sample["net_input"]["mode"]
         if mode == "st":
@@ -153,8 +153,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 # mt_loss, mt_lprobs, _, encoder_text_output = self.forward_mt(model, sample, reduce)
                 encoder_text_output = self.forward_mt(model, sample, reduce)
                 mix_loss, mix_lprobs, target, g = self.forward_x_cross_s(model, sample, reduce, encoder_text_output)
-                total_num += g.numel()
-                text_num += g.sum().item()
+                text_percent = 1.0 * g.sum().item() / g.numel()
                 jsd_loss = self.compute_jsd_loss(st_lprobs, mix_lprobs, target, target, self.padding_idx)
                 loss = st_loss + mix_loss + jsd_loss
                 st_size = mt_size = sample_size = sample["ntokens"]
@@ -180,8 +179,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "ntokens": sample["ntokens"],
             "nsentences": sample["target"].size(0),
             "sample_size": sample_size,
-            "total_num": total_num,
-            "text_num": text_num
+            "text_percent": text_percent,
         }
         
         return loss, sample_size, logging_output
@@ -199,8 +197,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         ext_mt_sample_size = sum(log.get("ext_mt_sample_size", 0) for log in logging_outputs)
         mix_loss_sum = sum(log.get("mix_loss", 0) for log in logging_outputs)
         jsd_loss_sum = sum(log.get("jsd_loss", 0) for log in logging_outputs)
-        total_num_sum = sum(log.get("total_num", 0) for log in logging_outputs)
-        text_num_sum = sum(log.get("text_num", 0) for log in logging_outputs)
+        text_percent_sum = sum(log.get("text_percent", 0) for log in logging_outputs)
 
         metrics.log_scalar(
             "loss", loss_sum / sample_size / math.log(2), sample_size, round=3
@@ -221,7 +218,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "ext_mt_loss", ext_mt_loss_sum / ext_mt_sample_size / math.log(2) if ext_mt_sample_size != 0 else 0, ext_mt_sample_size, round=3
         )
         metrics.log_scalar(
-            "text_percent", 1.0 * text_num_sum / total_num_sum if total_num_sum != 0 else 0, total_num_sum, round=3
+            "text_percent", text_percent_sum / sample_size if sample_size != 0 else 0, sample_size, round=3
         )
 
     @staticmethod
