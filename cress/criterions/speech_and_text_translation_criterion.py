@@ -142,9 +142,9 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         """
         st_loss, mt_loss, ext_mt_loss = torch.Tensor([0.]), torch.Tensor([0.]), torch.Tensor([0.])
         mix_loss, jsd_loss = torch.Tensor([0.]), torch.Tensor([0.])
+        batch_num = torch.Tensor([1.])
         text_percent = torch.Tensor([0.])
         st_size, mt_size, ext_mt_size = 0, 0, 0
-        batch_size = 0
 
         mode = sample["net_input"]["mode"]
         if mode == "st":
@@ -158,7 +158,6 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 jsd_loss = self.compute_jsd_loss(st_lprobs, mix_lprobs, target, target, self.padding_idx)
                 loss = st_loss + mix_loss + jsd_loss
                 st_size = mt_size = sample_size = sample["ntokens"]
-                batch_size = encoder_text_output.shape[1]
             # st(dev or train only)
             else:
                 st_loss, _, _, _ = self.forward_st(model, sample, reduce)
@@ -182,7 +181,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "nsentences": sample["target"].size(0),
             "sample_size": sample_size,
             "text_percent": text_percent.data,
-            "batch_size": batch_size,
+            "batch_num": batch_num,
         }
         
         return loss, sample_size, logging_output
@@ -201,7 +200,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         mix_loss_sum = sum(log.get("mix_loss", 0) for log in logging_outputs)
         jsd_loss_sum = sum(log.get("jsd_loss", 0) for log in logging_outputs)
         text_percent_sum = sum(log.get("text_percent", 0) for log in logging_outputs)
-        batch_size_sum = sum(log.get("batch_size", 0) for log in logging_outputs)
+        batch_num_sum = sum(log.get("batch_num", 0) for log in logging_outputs)
 
         metrics.log_scalar(
             "loss", loss_sum / sample_size / math.log(2), sample_size, round=3
@@ -222,7 +221,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "ext_mt_loss", ext_mt_loss_sum / ext_mt_sample_size / math.log(2) if ext_mt_sample_size != 0 else 0, ext_mt_sample_size, round=3
         )
         metrics.log_scalar(
-            "text_percent", text_percent_sum / batch_size_sum if batch_size_sum != 0 else 0, batch_size_sum, round=3
+            "text_percent", text_percent_sum / batch_num_sum if batch_num_sum != 0 else 0, batch_num_sum, round=3
         )
 
     @staticmethod
