@@ -140,10 +140,10 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         2) the sample size, which is used as the denominator for the gradient
         3) logging outputs to display while training
         """
-        st_loss, mt_loss, ext_mt_loss = torch.Tensor([0]), torch.Tensor([0]), torch.Tensor([0])
-        mix_loss, jsd_loss = torch.Tensor([0]), torch.Tensor([0])
+        st_loss, mt_loss, ext_mt_loss = torch.Tensor([0.]), torch.Tensor([0.]), torch.Tensor([0.])
+        mix_loss, jsd_loss = torch.Tensor([0.]), torch.Tensor([0.])
+        text_percent = torch.Tensor([0.])
         st_size, mt_size, ext_mt_size = 0, 0, 0
-        text_percent = 0.0
 
         mode = sample["net_input"]["mode"]
         if mode == "st":
@@ -153,7 +153,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 # mt_loss, mt_lprobs, _, encoder_text_output = self.forward_mt(model, sample, reduce)
                 encoder_text_output = self.forward_mt(model, sample, reduce)
                 mix_loss, mix_lprobs, target, g = self.forward_x_cross_s(model, sample, reduce, encoder_text_output)
-                text_percent = 1.0 * g.sum().item() / g.numel()
+                text_percent = torch.mean(g)
                 jsd_loss = self.compute_jsd_loss(st_lprobs, mix_lprobs, target, target, self.padding_idx)
                 loss = st_loss + mix_loss + jsd_loss
                 st_size = mt_size = sample_size = sample["ntokens"]
@@ -179,7 +179,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "ntokens": sample["ntokens"],
             "nsentences": sample["target"].size(0),
             "sample_size": sample_size,
-            "text_percent": text_percent,
+            "text_percent": text_percent.data,
         }
         
         return loss, sample_size, logging_output
@@ -218,7 +218,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "ext_mt_loss", ext_mt_loss_sum / ext_mt_sample_size / math.log(2) if ext_mt_sample_size != 0 else 0, ext_mt_sample_size, round=3
         )
         metrics.log_scalar(
-            "text_percent", text_percent_sum, 0, round=3
+            "text_percent", text_percent_sum, 1, round=3
         )
 
     @staticmethod
