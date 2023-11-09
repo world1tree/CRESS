@@ -218,7 +218,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "ext_mt_loss", ext_mt_loss_sum / ext_mt_sample_size / math.log(2) if ext_mt_sample_size != 0 else 0, ext_mt_sample_size, round=3
         )
         metrics.log_scalar(
-            "text_percent", text_percent_sum, 0, round=3
+            "text_percent", text_percent_sum, 1, round=3
         )
 
     @staticmethod
