@@ -41,7 +41,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         super().__init__(task, sentence_avg, label_smoothing, ignore_prefix_size, report_accuracy)
         self.mt_finetune = mt_finetune
     
-    def forward_st(self, model, sample, reduce):
+    def forward_st(self, model, sample, target_mt, reduce):
         audio_input = {
             "src_tokens": sample["net_input"]["audio"],
             "src_lengths": sample["net_input"]["audio_lengths"],
@@ -49,7 +49,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "prev_output_tokens": sample["net_input"]["prev_output_tokens"],
         }
         audio_output = model(**audio_input)
-        loss, _ = self.compute_loss(model, audio_output, sample, reduce=reduce)
+        loss, _ = self.compute_loss_st(model, audio_output, target_mt, sample, reduce=reduce)
         return loss
     
     def forward_mt(self, model, sample, reduce):
@@ -60,8 +60,12 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "prev_output_tokens": sample["net_input"]["prev_output_tokens"],
         }
         text_output = model(**text_input)
+        with torch.no_grad():
+            lprobs = model.get_normalized_probs(text_output, log_probs=True)
+            target = torch.argmax(lprobs, dim=-1)
+            target_mt = target.detach()
         loss, _ = self.compute_loss(model, text_output, sample, reduce=reduce)
-        return loss
+        return loss, target_mt
     
     def forward_ext_mt(self, model, sample, reduce):
         text_output = model(**sample["net_input"])
@@ -82,13 +86,14 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         if mode == "st":
             # st + mt
             if self.mt_finetune and self.training:
-                st_loss = self.forward_st(model, sample, reduce)
-                mt_loss = self.forward_mt(model, sample, reduce)
+                mt_loss, target_mt = self.forward_mt(model, sample, reduce)
+                st_loss = self.forward_st(model, sample, target_mt, reduce)
                 loss = st_loss + mt_loss
                 st_size = mt_size = sample_size = sample["ntokens"]
             # st(dev or train only)
             else:
-                loss = st_loss = self.forward_st(model, sample, reduce)
+                mt_loss, target_mt = self.forward_mt(model, sample, reduce)
+                loss = st_loss = self.forward_st(model, sample, target_mt, reduce)
                 st_size = sample_size = sample["ntokens"]
         elif mode == "ext_mt":
             loss = ext_mt_loss = self.forward_ext_mt(model, sample, reduce)

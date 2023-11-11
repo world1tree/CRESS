@@ -115,6 +115,18 @@ class LabelSmoothedCrossEntropyCriterion(FairseqCriterion):
         )
         return loss, nll_loss
 
+    def compute_loss_st(self, model, net_output, target_mt, sample, reduce=True):
+        lprobs, _ = self.get_lprobs_and_target(model, net_output, sample)
+        target_mt = target_mt.view(-1)
+        loss, nll_loss = label_smoothed_nll_loss(
+            lprobs,
+            target_mt,
+            self.eps,
+            ignore_index=self.padding_idx,
+            reduce=reduce,
+        )
+        return loss, nll_loss
+
     def compute_accuracy(self, model, net_output, sample):
         lprobs, target = self.get_lprobs_and_target(model, net_output, sample)
         mask = target.ne(self.padding_idx)
