@@ -42,11 +42,16 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         self.mt_finetune = mt_finetune
     
     def forward_st(self, model, sample, target_mt, reduce):
+        prev_output_tokens = sample["net_input"]["prev_output_tokens"]
+        bsz, _ = prev_output_tokens.size()
+        bos_idx = prev_output_tokens[0, 0].repeat(bsz, 1).to(target_mt)
+        prev_output_tokens_new = torch.cat([bos_idx, target_mt], dim=1)[:, :-1]
+
         audio_input = {
             "src_tokens": sample["net_input"]["audio"],
             "src_lengths": sample["net_input"]["audio_lengths"],
             "mode": "st",
-            "prev_output_tokens": sample["net_input"]["prev_output_tokens"],
+            "prev_output_tokens": prev_output_tokens_new,
         }
         audio_output = model(**audio_input)
         loss, _ = self.compute_loss_st(model, audio_output, target_mt, sample, reduce=reduce)
