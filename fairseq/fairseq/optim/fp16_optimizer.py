@@ -105,7 +105,7 @@ class _FP16OptimizerMixin(object):
         """
         if self.scaler is not None:
             loss = self.scaler.scale(loss)
-        loss.backward()
+        # loss.backward()
         self._needs_sync = True
 
     def _sync_fp16_grads_to_fp32(self):

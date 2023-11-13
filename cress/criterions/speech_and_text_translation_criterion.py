@@ -107,14 +107,14 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 write_items.append(str(st_correct_tokens))
                 write_items.append(str(mt_correct_tokens))
                 write_items.append(str(common_correct_tokens))
-                with open("ans.txt", "w") as f:
+                with open("ans.txt", "a") as f:
                     f.write("\t".join(write_items) + "\n")
                 loss = torch.tensor(0., device=st_loss.device)
                 st_size = mt_size = sample_size = sample["ntokens"]
             # st(dev or train only)
             else:
                 # loss = st_loss = self.forward_st(model, sample, reduce)
-                loss = torch.tensor(0.)
+                loss = st_loss + mt_loss
                 st_size = sample_size = sample["ntokens"]
         elif mode == "ext_mt":
             loss = ext_mt_loss = self.forward_ext_mt(model, sample, reduce)
