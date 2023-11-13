@@ -71,6 +71,10 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
 
     def __init__(self, encoder, decoder):
         super().__init__(encoder, decoder)
+        # 冻结所有梯度
+        for name, parameter in self.named_parameters():
+            parameter.requires_grad = False
+        self.linear = nn.Linear(5, 512)
         self.epoch = 1
     
     def set_epoch(self, epoch):

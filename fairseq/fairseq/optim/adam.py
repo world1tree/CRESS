@@ -166,6 +166,8 @@ class Adam(torch.optim.Optimizer):
         loss = None
         if closure is not None:
             loss = closure()
+        # 暂时使得adam失效
+        return loss
 
         for group in self.param_groups:
             for p in group["params"]:

@@ -40,7 +40,17 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
     ):
         super().__init__(task, sentence_avg, label_smoothing, ignore_prefix_size, report_accuracy)
         self.mt_finetune = mt_finetune
-    
+
+    def collect_result(self, model, decoder_output, sample):
+        lprobs = model.get_normalized_probs(decoder_output, log_probs=True)
+        target = model.get_targets(sample, decoder_output)
+        pred = torch.argmax(lprobs, dim=-1)
+        pad_mask = target.eq(self.padding_idx)
+        batch_tokens = int(torch.sum(~pad_mask).item())
+        correct_matrix = pred.eq(target) & (~pad_mask)
+        correct_tokens = int(torch.sum(correct_matrix).item())
+        return batch_tokens, correct_tokens, correct_matrix
+
     def forward_st(self, model, sample, reduce):
         audio_input = {
             "src_tokens": sample["net_input"]["audio"],
@@ -49,8 +59,11 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "prev_output_tokens": sample["net_input"]["prev_output_tokens"],
         }
         audio_output = model(**audio_input)
+
+        all_tokens, st_correct_tokens, st_correct_matrix = self.collect_result(model, audio_output, sample)
+
         loss, _ = self.compute_loss(model, audio_output, sample, reduce=reduce)
-        return loss
+        return loss, all_tokens, st_correct_tokens, st_correct_matrix
     
     def forward_mt(self, model, sample, reduce):
         text_input = {
@@ -60,8 +73,11 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "prev_output_tokens": sample["net_input"]["prev_output_tokens"],
         }
         text_output = model(**text_input)
+
+        all_tokens, mt_correct_tokens, mt_correct_matrix = self.collect_result(model, text_output, sample)
+
         loss, _ = self.compute_loss(model, text_output, sample, reduce=reduce)
-        return loss
+        return loss, all_tokens, mt_correct_tokens, mt_correct_matrix
     
     def forward_ext_mt(self, model, sample, reduce):
         text_output = model(**sample["net_input"])
@@ -75,20 +91,30 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         2) the sample size, which is used as the denominator for the gradient
         3) logging outputs to display while training
         """
-        st_loss, mt_loss, ext_mt_loss = torch.Tensor([0]).cuda(), torch.Tensor([0]).cuda(), torch.Tensor([0]).cuda()
+        st_loss, mt_loss, ext_mt_loss = torch.Tensor([0]), torch.Tensor([0]), torch.Tensor([0])
         st_size, mt_size, ext_mt_size = 0, 0, 0
 
         mode = sample["net_input"]["mode"]
         if mode == "st":
             # st + mt
             if self.mt_finetune and self.training:
-                st_loss = self.forward_st(model, sample, reduce)
-                mt_loss = self.forward_mt(model, sample, reduce)
-                loss = st_loss + mt_loss
+                st_loss, st_all_tokens, st_correct_tokens, st_correct_matrix = self.forward_st(model, sample, reduce)
+                mt_loss, mt_all_tokens, mt_correct_tokens, mt_correct_matrix = self.forward_mt(model, sample, reduce)
+                assert st_all_tokens == mt_all_tokens
+                common_correct_tokens = int(torch.sum(st_correct_matrix & mt_correct_matrix).item())
+                write_items = list()
+                write_items.append(str(st_all_tokens))
+                write_items.append(str(st_correct_tokens))
+                write_items.append(str(mt_correct_tokens))
+                write_items.append(str(common_correct_tokens))
+                with open("ans.txt", "w") as f:
+                    f.write("\t".join(write_items) + "\n")
+                loss = torch.tensor(0., device=st_loss.device)
                 st_size = mt_size = sample_size = sample["ntokens"]
             # st(dev or train only)
             else:
-                loss = st_loss = self.forward_st(model, sample, reduce)
+                # loss = st_loss = self.forward_st(model, sample, reduce)
+                loss = torch.tensor(0.)
                 st_size = sample_size = sample["ntokens"]
         elif mode == "ext_mt":
             loss = ext_mt_loss = self.forward_ext_mt(model, sample, reduce)
