@@ -69,7 +69,8 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         # B, T, 10000
         logits = model(**bert_input).logits
 
-        loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)  # -100 index = padding token
+        loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100, reduction="sum")  # -100 index = padding token
+        masked_num = labels.ne(-100).sum().item()
         loss = loss_fct(logits.view(-1, 10000), labels.view(-1))
 
         # same as above
@@ -78,7 +79,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         # new_labels = labels[mask_indices]
         # new_loss = loss_fct(new_logits.view(-1, 10000), new_labels.view(-1))
 
-        return loss
+        return loss, masked_num
 
     def forward_ext_mt(self, model, sample, reduce):
         text_output = model(**sample["net_input"])
@@ -96,6 +97,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         masked_lm_loss = torch.Tensor([0])
         jsd_loss = torch.Tensor([0])
         st_size, mt_size, ext_mt_size = 0, 0, 0
+        masked_num = 0
 
         mode = sample["net_input"]["mode"]
         if mode == "st":
@@ -103,12 +105,14 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             if self.mt_finetune and self.training:
                 # st_loss = self.forward_st(model, sample, reduce)
                 # mt_loss = self.forward_mt(model, sample, reduce)
-                loss = masked_lm_loss = self.forward_masked_lm(model, sample, reduce)
+                masked_lm_loss, masked_num = self.forward_masked_lm(model, sample, reduce)
+                loss = masked_lm_loss
                 st_size = mt_size = sample_size = sample["ntokens"]
             # st(dev or train only)
             else:
                 # loss = st_loss = self.forward_st(model, sample, reduce)
-                loss = masked_lm_loss = self.forward_masked_lm(model, sample, reduce)
+                masked_lm_loss, masked_num = self.forward_masked_lm(model, sample, reduce)
+                loss = masked_lm_loss
                 st_size = sample_size = sample["ntokens"]
         elif mode == "ext_mt":
             loss = ext_mt_loss = self.forward_ext_mt(model, sample, reduce)
@@ -123,6 +127,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "ext_mt_loss": ext_mt_loss.data,
             "ext_mt_sample_size": ext_mt_size,
             "masked_lm_loss": masked_lm_loss.data,
+            "masked_num": masked_num,
             "ntokens": sample["ntokens"],
             "nsentences": sample["target"].size(0),
             "sample_size": sample_size,
@@ -138,13 +143,14 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         mt_loss_sum = sum(log.get("mt_loss", 0) for log in logging_outputs)
         ext_mt_loss_sum = sum(log.get("ext_mt_loss", 0) for log in logging_outputs)
         masked_lm_loss_sum = sum(log.get("masked_lm_loss", 0) for log in logging_outputs)
+        masked_num_sum = sum(log.get("masked_num", 0) for log in logging_outputs)
         sample_size = sum(log.get("sample_size", 0) for log in logging_outputs)
         st_sample_size = sum(log.get("st_sample_size", 0) for log in logging_outputs)
         mt_sample_size = sum(log.get("mt_sample_size", 0) for log in logging_outputs)
         ext_mt_sample_size = sum(log.get("ext_mt_sample_size", 0) for log in logging_outputs)
 
         metrics.log_scalar(
-            "loss", loss_sum / sample_size / math.log(2), sample_size, round=3
+            "loss", loss_sum / masked_num_sum / math.log(2) if masked_num_sum != 0 else 0, masked_num_sum, round=3
         )
         metrics.log_scalar(
             "st_loss", st_loss_sum / st_sample_size / math.log(2) if st_sample_size != 0 else 0, st_sample_size, round=3
@@ -153,7 +159,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "mt_loss", mt_loss_sum / mt_sample_size / math.log(2) if mt_sample_size != 0 else 0, mt_sample_size, round=3
         )
         metrics.log_scalar(
-            "masked_lm_loss", masked_lm_loss_sum / mt_sample_size / math.log(2) if mt_sample_size != 0 else 0, mt_sample_size, round=3
+            "masked_lm_loss", masked_lm_loss_sum / masked_num_sum / math.log(2) if masked_num_sum != 0 else 0, masked_num_sum, round=3
         )
         metrics.log_scalar(
             "ext_mt_loss", ext_mt_loss_sum / ext_mt_sample_size / math.log(2) if ext_mt_sample_size != 0 else 0, ext_mt_sample_size, round=3
