@@ -65,8 +65,19 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
 
     def forward_masked_lm(self, model, sample, reduce):
         bert_input = sample["bert_input"]
-        text_output = model(**bert_input)
-        loss, _ = self.compute_loss(model, text_output, sample, reduce=reduce)
+        labels = sample["bert_labels"]
+        # B, T, 10000
+        logits = model(**bert_input).logits
+
+        loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100)  # -100 index = padding token
+        loss = loss_fct(logits.view(-1, 10000), labels.view(-1))
+
+        # same as above
+        # mask_indices = bert_input["input_ids"].eq(103) & bert_input["token_type_ids"].eq(1)
+        # new_logits = logits[mask_indices]
+        # new_labels = labels[mask_indices]
+        # new_loss = loss_fct(new_logits.view(-1, 10000), new_labels.view(-1))
+
         return loss
 
     def forward_ext_mt(self, model, sample, reduce):
@@ -92,8 +103,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             if self.mt_finetune and self.training:
                 # st_loss = self.forward_st(model, sample, reduce)
                 # mt_loss = self.forward_mt(model, sample, reduce)
-                masked_lm_loss = self.forward_masked_lm(model, sample, reduce)
-                loss = masked_lm_loss
+                loss = masked_lm_loss = self.forward_masked_lm(model, sample, reduce)
                 st_size = mt_size = sample_size = sample["ntokens"]
             # st(dev or train only)
             else:
@@ -112,7 +122,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "mt_sample_size": mt_size,
             "ext_mt_loss": ext_mt_loss.data,
             "ext_mt_sample_size": ext_mt_size,
-            "masked_lm_loss": masked_lm_loss,
+            "masked_lm_loss": masked_lm_loss.data,
             "ntokens": sample["ntokens"],
             "nsentences": sample["target"].size(0),
             "sample_size": sample_size,

@@ -191,7 +191,10 @@ class BertEmbeddings(nn.Module):
         super().__init__()
 
         # final distribution should be 10000, pad should be 1
-        self.mustc_word_embeddings = nn.Embedding(10000, config.hidden_size, padding_idx=1)
+        padding_idx = 1
+        self.mustc_word_embeddings = nn.Embedding(10000, config.hidden_size, padding_idx=padding_idx)
+        nn.init.normal_(self.mustc_word_embeddings.weight, mean=0, std=config.hidden_size ** -0.5)
+        nn.init.constant_(self.mustc_word_embeddings.weight[padding_idx], 0)
         # (512, 768)
         # self.mustc_position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
         # (1, 768), as long as it is different from the previous token_type embedding
@@ -250,9 +253,21 @@ class BertEmbeddings(nn.Module):
             # for y: we use randomly embedding or mustc embedding except for mask and pad
 
             x_indices = token_type_ids.eq(0)
-            mask_indices = input_ids.eq(103)
+            # hard coded here
+            mask_indices = input_ids.eq(103) & token_type_ids.eq(1)
+            # 0 will only be used as pad in y, sentencepiece 0 is <bos>, 1 is pad, but they shouldn't
+            # exist in y
+            pad_indices = input_ids.eq(0) & token_type_ids.eq(1)
 
-            inputs_embeds = self.word_embeddings(input_ids)
+            bert_part_indices = x_indices | mask_indices | pad_indices
+            mustc_part_indices = ~bert_part_indices
+
+            bert_all_embeds = self.word_embeddings(input_ids)
+            mustc_all_embeds = self.mustc_word_embeddings(input_ids.masked_fill(x_indices, 0))
+            inputs_embeds = torch.zeros_like(bert_all_embeds)
+            inputs_embeds[bert_part_indices] = bert_all_embeds[bert_part_indices]
+            inputs_embeds[mustc_part_indices] = mustc_all_embeds[mustc_part_indices]
+
         token_type_embeddings = self.token_type_embeddings(token_type_ids)
 
         embeddings = inputs_embeds + token_type_embeddings
@@ -714,15 +729,20 @@ class BertLMPredictionHead(nn.Module):
         # The output weights are the same as the input embeddings, but there is
         # an output-only bias for each token.
         self.decoder = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        # hard-code here
+        self.mustc_decoder = nn.Linear(config.hidden_size, 10000, bias=False)
 
         self.bias = nn.Parameter(torch.zeros(config.vocab_size))
 
         # Need a link between the two variables so that the bias is correctly resized with `resize_token_embeddings`
         self.decoder.bias = self.bias
 
-    def forward(self, hidden_states):
+    def forward(self, hidden_states, only_y_logits=False):
         hidden_states = self.transform(hidden_states)
-        hidden_states = self.decoder(hidden_states)
+        if only_y_logits:
+            hidden_states = self.mustc_decoder(hidden_states)
+        else:
+            hidden_states = self.decoder(hidden_states)
         return hidden_states
 
 
@@ -731,8 +751,8 @@ class BertOnlyMLMHead(nn.Module):
         super().__init__()
         self.predictions = BertLMPredictionHead(config)
 
-    def forward(self, sequence_output: torch.Tensor) -> torch.Tensor:
-        prediction_scores = self.predictions(sequence_output)
+    def forward(self, sequence_output: torch.Tensor, only_y_logits=False) -> torch.Tensor:
+        prediction_scores = self.predictions(sequence_output, only_y_logits=only_y_logits)
         return prediction_scores
 
 
@@ -752,8 +772,8 @@ class BertPreTrainingHeads(nn.Module):
         self.predictions = BertLMPredictionHead(config)
         self.seq_relationship = nn.Linear(config.hidden_size, 2)
 
-    def forward(self, sequence_output, pooled_output):
-        prediction_scores = self.predictions(sequence_output)
+    def forward(self, sequence_output, pooled_output, only_y_logits=False):
+        prediction_scores = self.predictions(sequence_output, only_y_logits=only_y_logits)
         seq_relationship_score = self.seq_relationship(pooled_output)
         return prediction_scores, seq_relationship_score
 
@@ -922,6 +942,9 @@ class BertModel(BertPreTrainedModel):
     def get_input_embeddings(self):
         return self.embeddings.word_embeddings
 
+    def get_mustc_input_embeddings(self):
+        return self.embeddings.mustc_word_embeddings
+
     def set_input_embeddings(self, value):
         self.embeddings.word_embeddings = value
 
@@ -979,6 +1002,7 @@ class BertModel(BertPreTrainedModel):
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
+        # This is True
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
         if self.config.is_decoder:
@@ -1058,6 +1082,7 @@ class BertModel(BertPreTrainedModel):
             return_dict=return_dict,
         )
         sequence_output = encoder_outputs[0]
+        # Here is None
         pooled_output = self.pooler(sequence_output) if self.pooler is not None else None
 
         if not return_dict:
@@ -1343,6 +1368,10 @@ class BertForMaskedLM(BertPreTrainedModel):
 
         # Initialize weights and apply final processing
         self.post_init()
+        # share params between mustc embeddings
+        mustc_input_embedding = self.bert.get_mustc_input_embeddings()
+        mustc_output_embedding = self.get_mustc_output_embeddings()
+        mustc_output_embedding.weight = mustc_input_embedding.weight
 
     @staticmethod
     def add_args(parser):
@@ -1367,6 +1396,9 @@ class BertForMaskedLM(BertPreTrainedModel):
 
     def get_output_embeddings(self):
         return self.cls.predictions.decoder
+
+    def get_mustc_output_embeddings(self):
+        return self.cls.predictions.mustc_decoder
 
     def set_output_embeddings(self, new_embeddings):
         self.cls.predictions.decoder = new_embeddings
@@ -1418,7 +1450,7 @@ class BertForMaskedLM(BertPreTrainedModel):
         )
 
         sequence_output = outputs[0]
-        prediction_scores = self.cls(sequence_output)
+        prediction_scores = self.cls(sequence_output, only_y_logits=True)
 
         masked_lm_loss = None
         if labels is not None:

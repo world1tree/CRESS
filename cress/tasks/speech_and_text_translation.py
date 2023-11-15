@@ -186,7 +186,7 @@ class SpeechAndTextTranslationTask(LegacyFairseqTask):
             help="args for building the bpe, if needed",
         )
 
-    def __init__(self, args, src_dict, tgt_dict):
+    def __init__(self, args, src_dict, tgt_dict, bert_tokenizer):
         super().__init__(args)
         self.src_dict = src_dict
         self.tgt_dict = tgt_dict
@@ -195,6 +195,7 @@ class SpeechAndTextTranslationTask(LegacyFairseqTask):
 
         self.pre_tokenizer = self.build_tokenizer(self.args)
         self.bpe_tokenizer = self.build_bpe(self.args)
+        self.bert_tokenizer = bert_tokenizer
 
     def _get_speaker_to_id(self):
         speaker_to_id = None
@@ -216,10 +217,14 @@ class SpeechAndTextTranslationTask(LegacyFairseqTask):
             f"dictionary size ({data_cfg.vocab_filename}): " f"{len(tgt_dict):,}"
         )
 
+        from transformers import AutoTokenizer
+        model_name = "bert-base-cased"
+        bert_tokenizer = AutoTokenizer.from_pretrained(model_name)
+
         if getattr(args, "train_subset", None) is not None:
             if not all(s.startswith("train") for s in args.train_subset.split(",")):
                 raise ValueError('Train splits should be named like "train*".')
-        return cls(args, src_dict, tgt_dict)
+        return cls(args, src_dict, tgt_dict, bert_tokenizer)
 
     def build_criterion(self, args):
         from fairseq import criterions
@@ -272,6 +277,7 @@ class SpeechAndTextTranslationTask(LegacyFairseqTask):
             epoch=epoch,
             seed=self.args.seed,
             speaker_to_id=self.speaker_to_id,
+            bert_tokenizer=self.bert_tokenizer,
         )
     
     def load_mt_dataset(self, split):

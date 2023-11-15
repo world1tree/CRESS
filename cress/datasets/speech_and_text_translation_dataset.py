@@ -39,6 +39,9 @@ class SpeechAndTextTranslationDatasetItem(object):
     audio: torch.Tensor
     source: torch.Tensor
     target: torch.Tensor
+    concat: torch.Tensor = None
+    type_indicator: torch.Tensor = None
+    label: torch.Tensor = None
     speaker_id: Optional[int] = None
 
 
@@ -64,6 +67,7 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
         n_frames_per_step=1,
         speaker_to_id=None,
         append_eos=True,
+        bert_tokenizer=None,
     ):
         self.split, self.is_train_split = split, is_train_split
         self.cfg = cfg
@@ -99,6 +103,15 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
         self.src_lens = self.get_src_lens_and_check_oov()
         self.tgt_lens = self.get_tgt_lens_and_check_oov()
         self.append_eos = append_eos
+        self.bert_tokenizer = bert_tokenizer
+        self.bert_vocab = self.bert_tokenizer.get_vocab()
+        self.bert_mask_id = self.bert_vocab[self.bert_tokenizer.mask_token]
+        self.bert_unk_id = self.bert_vocab[self.bert_tokenizer.unk_token]
+        self.bert_cls_id = self.bert_vocab[self.bert_tokenizer.cls_token]
+        self.bert_sep_id = self.bert_vocab[self.bert_tokenizer.sep_token]
+        # 0
+        self.bert_pad_id = self.bert_vocab[self.bert_tokenizer.pad_token]
+        self.check_x_oov_with_bert()
 
         logger.info(self.__repr__())
 
@@ -119,6 +132,20 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
             src_lens.append(len(tokenized))
         logger.info(f"'{self.split}-src' has {n_oov_tokens / n_tokens * 100:.2f}% OOV")
         return src_lens
+
+    def check_x_oov_with_bert(self):
+        n_tokens, n_oov_tokens = 0, 0
+        for i in range(self.n_samples):
+            tokenized = self.bert_tokenizer(self.src_texts[i])
+            ids = tokenized["input_ids"]
+            oov_tokens = [
+                t
+                for t in ids
+                if t == self.bert_unk_id
+            ]
+            n_tokens += len(ids)
+            n_oov_tokens += len(oov_tokens)
+        logger.info(f"'check x with bert' has {n_oov_tokens / n_tokens * 100:.2f}% OOV")
 
     def get_tgt_lens_and_check_oov(self):
         if self.tgt_texts is None:
@@ -163,6 +190,65 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
     @classmethod
     def tokenize(cls, tokenizer, text: str):
         return text if tokenizer is None else tokenizer.encode(text)
+
+    def truncate_text_strategy1(self, index, src_text_tokenized, tgt_text_tokenized, max_length=512):
+        src_length = src_text_tokenized.size(0)
+        tgt_length = tgt_text_tokenized.size(0)
+        total_length = src_length + tgt_length
+        if total_length <= max_length:
+            text_tokenized = torch.concat([src_text_tokenized, tgt_text_tokenized], dim=0)
+            seq_type_indicator = text_tokenized.new_zeros(text_tokenized.size(0), dtype=torch.long)
+            seq_type_indicator[:src_length] = 0
+            seq_type_indicator[src_length:] = 1
+        else:
+            # I think it is not too many
+            logger.warning(f"id: {index}, text length is {total_length}, longer than 512, truncate it")
+            # truncate tgt text, should keep cls and sep left
+            tgt_text_tokenized = tgt_text_tokenized[:min(tgt_length, max_length-2)]
+            left_length = total_length - tgt_text_tokenized.size(0)
+            # truncate src text
+            src_text_tokenized = src_text_tokenized[:left_length]
+            src_text_tokenized[-1] = self.bert_sep_id
+            # concat src text and tgt text
+            text_tokenized = torch.concat([src_text_tokenized, tgt_text_tokenized], dim=0)
+
+            seq_type_indicator = text_tokenized.new_zeros(text_tokenized.size(0), dtype=torch.long)
+            seq_type_indicator[:-left_length] = 0
+            seq_type_indicator[-left_length:] = 1
+
+        return text_tokenized, seq_type_indicator
+
+    def get_bert_input_and_label(self, concat_text_tokenizer, seq_type_indicator):
+        # -100 will be ignored when calculate loss
+        label = concat_text_tokenizer.new_ones(concat_text_tokenizer.size(0), dtype=torch.long) * -100
+        p = seq_type_indicator * 0.15
+        selected = torch.bernoulli(p).bool()
+        # create label
+        label[selected] = concat_text_tokenizer[selected]
+        # create input, mask should use bert tokenizer
+        concat_text_tokenizer[selected] = self.bert_mask_id
+
+        return concat_text_tokenizer, label
+
+    def get_tokenized_text_with_bert(self, index: int):
+        src_text = self.src_texts[index]
+        tgt_text = self.tgt_texts[index]
+
+        # from bert tokenizer
+        src_text_tokenized = self.bert_tokenizer(src_text, return_tensors='pt')["input_ids"].squeeze(0)
+        # from sentencepiece tokenizer
+        tgt_text_pre_tokenized = self.tokenize(self.pre_tokenizer, tgt_text)
+        tgt_text_tokenized = self.tokenize(self.bpe_tokenizer, tgt_text_pre_tokenized)
+        tgt_text_tokenized = self.tgt_dict.encode_line(
+            tgt_text_tokenized, add_if_not_exist=False, append_eos=self.append_eos
+        ).long()
+        # we need ensure length not surpass 512
+        # strategy1: only truncate src text
+        concat_text_tokenizer, seq_type_indicator = self.truncate_text_strategy1(index, src_text_tokenized, tgt_text_tokenized, max_length=512)
+        # strategy2: truncate src and tgt text and keep src and tgt text almost same
+        concat_text_tokenizer, label = self.get_bert_input_and_label(concat_text_tokenizer, seq_type_indicator)
+
+        return concat_text_tokenizer, seq_type_indicator, label
 
     def get_tokenized_src_text(self, index: int):
         text = self.tokenize(self.pre_tokenizer, self.src_texts[index])
@@ -219,6 +305,10 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
         target = self.tgt_dict.encode_line(
             tokenized, add_if_not_exist=False, append_eos=self.append_eos
         ).long()
+
+        # tokenize x with bert and tokenize y with sentencepiece
+        concat_text_tokenizer, seq_type_indicator, label = self.get_tokenized_text_with_bert(index)
+
         # False
         if self.cfg.prepend_tgt_lang_tag:
             lang_tag_idx = self.get_lang_tag_idx(
@@ -230,11 +320,30 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
         if self.speaker_to_id is not None:
             speaker_id = self.speaker_to_id[self.speakers[index]]
         return SpeechAndTextTranslationDatasetItem(
-            index=index, audio=audio, source=source, target=target, speaker_id=speaker_id
+            index=index, audio=audio, source=source, target=target, speaker_id=speaker_id,
+            concat=concat_text_tokenizer, type_indicator=seq_type_indicator, label=label
         )
 
     def __len__(self):
         return self.n_samples
+
+    def collate_tokens(
+            self,
+            values,
+            pad_idx,
+    ):
+        size = max(v.size(0) for v in values)
+
+        batch_size = len(values)
+        res = values[0].new(batch_size, size).fill_(pad_idx)
+
+        def copy_tensor(src, dst):
+            assert dst.numel() == src.numel()
+            dst.copy_(src)
+
+        for i, v in enumerate(values):
+            copy_tensor(v, res[i][: len(v)])
+        return res
 
     def collater(
         self, samples: List[SpeechAndTextTranslationDatasetItem], return_order: bool = False
@@ -293,6 +402,38 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
                 .view(-1, 1)
             )
 
+        concat = self.collate_tokens(
+            [x.concat for x in samples],
+            self.bert_pad_id, # eos should use sentencepiece tokenizer
+        )
+        concat = concat.index_select(0, order)
+
+        type_indicator = self.collate_tokens(
+            [x.type_indicator for x in samples],
+            self.bert_pad_id, # pad should use bert tokenzier
+        )
+        type_indicator = type_indicator.index_select(0, order)
+
+
+        label = self.collate_tokens(
+            [x.label for x in samples],
+            -100, # -100 will be ignored when calculate loss
+        )
+        label = label.index_select(0, order)
+
+        concat_lengths = torch.tensor(
+            [x.concat.size(0) for x in samples], dtype=torch.long
+        ).index_select(0, order)
+
+        # True is padding
+        concat_padding_mask = (~(fairseq_data_utils.lengths_to_padding_mask(concat_lengths))).long()
+
+        bert_input = {
+            "input_ids": concat,
+            "token_type_ids": type_indicator,
+            "attention_mask": concat_padding_mask,
+        }
+
         net_input = {
             "audio": frames,
             "audio_lengths": n_frames,
@@ -308,6 +449,8 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
             "target_lengths": target_lengths,
             "ntokens": ntokens,
             "nsentences": len(samples),
+            "bert_input": bert_input,
+            "bert_labels": label,
         }
         if return_order:
             out["order"] = order
@@ -362,6 +505,7 @@ class SpeechAndTextTranslationDatasetCreator(object):
         bpe_tokenizer,
         n_frames_per_step,
         speaker_to_id,
+        bert_tokenizer=None,
     ) -> SpeechAndTextTranslationDataset:
         audio_root = Path(cfg.audio_root)
         ids = [s[cls.KEY_ID] for s in samples]
@@ -389,6 +533,7 @@ class SpeechAndTextTranslationDatasetCreator(object):
             bpe_tokenizer=bpe_tokenizer,
             n_frames_per_step=n_frames_per_step,
             speaker_to_id=speaker_to_id,
+            bert_tokenizer=bert_tokenizer,
         )
 
     @classmethod
@@ -455,6 +600,7 @@ class SpeechAndTextTranslationDatasetCreator(object):
         bpe_tokenizer,
         n_frames_per_step,
         speaker_to_id,
+        bert_tokenizer=None,
     ) -> SpeechAndTextTranslationDataset:
         samples = cls._load_samples_from_tsv(root, split)
         return cls._from_list(
@@ -467,6 +613,7 @@ class SpeechAndTextTranslationDatasetCreator(object):
             bpe_tokenizer,
             n_frames_per_step,
             speaker_to_id,
+            bert_tokenizer,
         )
 
     @classmethod
@@ -483,6 +630,7 @@ class SpeechAndTextTranslationDatasetCreator(object):
         seed: int,
         n_frames_per_step: int = 1,
         speaker_to_id=None,
+        bert_tokenizer=None,
     ) -> SpeechAndTextTranslationDataset:
         datasets = [
             cls._from_tsv(
@@ -495,6 +643,7 @@ class SpeechAndTextTranslationDatasetCreator(object):
                 bpe_tokenizer,
                 n_frames_per_step,
                 speaker_to_id,
+                bert_tokenizer,
             )
             for split in splits.split(",")
         ]
