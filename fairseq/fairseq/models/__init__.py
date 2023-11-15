@@ -131,9 +131,10 @@ def register_model(name, dataclass=None):
             return MODEL_REGISTRY[name]
 
         if not issubclass(cls, BaseFairseqModel):
-            raise ValueError(
-                "Model ({}: {}) must extend BaseFairseqModel".format(name, cls.__name__)
-            )
+            pass
+            # raise ValueError(
+            #     "Model ({}: {}) must extend BaseFairseqModel".format(name, cls.__name__)
+            # )
         MODEL_REGISTRY[name] = cls
         if dataclass is not None and not issubclass(dataclass, FairseqDataclass):
             raise ValueError(
