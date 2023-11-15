@@ -151,7 +151,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         ext_mt_sample_size = sum(log.get("ext_mt_sample_size", 0) for log in logging_outputs)
 
         metrics.log_scalar(
-            "loss", loss_sum / masked_num_sum / math.log(2) if masked_num_sum != 0 else 0, masked_num_sum, round=3
+            "loss", loss_sum / math.log(2), 1, round=3
         )
         metrics.log_scalar(
             "st_loss", st_loss_sum / st_sample_size / math.log(2) if st_sample_size != 0 else 0, st_sample_size, round=3
@@ -160,7 +160,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "mt_loss", mt_loss_sum / mt_sample_size / math.log(2) if mt_sample_size != 0 else 0, mt_sample_size, round=3
         )
         metrics.log_scalar(
-            "masked_lm_loss", masked_lm_loss_sum / math.log(2) , 1, round=3
+            "masked_lm_loss", masked_lm_loss_sum / math.log(2), 1, round=3
         )
         metrics.log_scalar(
             "ext_mt_loss", ext_mt_loss_sum / ext_mt_sample_size / math.log(2) if ext_mt_sample_size != 0 else 0, ext_mt_sample_size, round=3
