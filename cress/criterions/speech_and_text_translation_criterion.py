@@ -69,7 +69,8 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         # B, T, 10000
         logits = model(**bert_input).logits
 
-        loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100, reduction="sum")  # -100 index = padding token
+        # if use sum, the loss will overflow
+        loss_fct = torch.nn.CrossEntropyLoss(ignore_index=-100, reduction="mean")  # -100 index = padding token
         masked_num = labels.ne(-100).sum().item()
         loss = loss_fct(logits.view(-1, 10000), labels.view(-1))
 
@@ -159,7 +160,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "mt_loss", mt_loss_sum / mt_sample_size / math.log(2) if mt_sample_size != 0 else 0, mt_sample_size, round=3
         )
         metrics.log_scalar(
-            "masked_lm_loss", masked_lm_loss_sum / masked_num_sum / math.log(2) if masked_num_sum != 0 else 0, masked_num_sum, round=3
+            "masked_lm_loss", masked_lm_loss_sum / math.log(2) , 1, round=3
         )
         metrics.log_scalar(
             "ext_mt_loss", ext_mt_loss_sum / ext_mt_sample_size / math.log(2) if ext_mt_sample_size != 0 else 0, ext_mt_sample_size, round=3
