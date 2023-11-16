@@ -69,10 +69,16 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
         )
         return S2THubInterface(x["args"], x["task"], x["models"][0])
 
-    def __init__(self, encoder, decoder):
+    def __init__(self, encoder, decoder, bert_model):
         super().__init__(encoder, decoder)
         self.epoch = 1
-    
+        self.bert_model = bert_model
+        # set eval state
+        self.bert_model.eval()
+        # freeze bert model
+        for param in self.bert_model.parameters():
+            param.requires_grad = False
+
     def set_epoch(self, epoch):
         self.epoch = epoch
 
@@ -205,6 +211,12 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
             type=str,
             help="model to take mt encoder/decoder weight from (for initialization)",
         )
+        parser.add_argument(
+            "--bert-model-path",
+            type=str,
+            metavar="STR",
+            help="path/to/hubert/model"
+        )
 
     @classmethod
     def build_encoder(cls, args, task=None, embed_tokens=None):
@@ -250,7 +262,15 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
             encoder.load_state_dict(mt_encoder_state_dict, strict=False)
             decoder.load_state_dict(mt_decoder_state_dict, strict=False)
 
-        return cls(encoder, decoder)
+        # load fine-tuned checkpoint path
+        from cress.models.seq2seq_bert import BertForMaskedLM
+        bert_fine_ckpt_path = args.bert_model_path
+        bert_state = torch.load(bert_fine_ckpt_path)
+        bert_model_state = bert_state["model"]
+        bert_model = BertForMaskedLM.from_pretrained("bert-base-cased")
+        bert_model.load_state_dict(bert_model_state, strict=True)
+
+        return cls(encoder, decoder, bert_model)
 
     def get_normalized_probs(
         self,
@@ -405,6 +425,73 @@ class HubertTransformerEncoder(FairseqEncoder):
         return {
             "encoder_out": [x],  # T x B x C
             "encoder_padding_mask": [encoder_padding_mask],  # B x T
+            "encoder_embedding": [encoder_embedding],  # B x T x C
+            "encoder_states": encoder_states,  # List[T x B x C]
+            "src_tokens": [],
+            "src_lengths": [],
+        }
+
+    def forward_x_cross_s(self, audio, audio_lengths, source, return_all_hiddens=False):
+        # 1. 首先对语音进行编码
+        s, s_encoder_padding_mask, input_lengths = self._get_hubert_features(audio, audio_lengths)
+        if self.subsampler is not None:
+            s, input_lengths = self.subsampler(s, input_lengths)
+            s_encoder_padding_mask = lengths_to_padding_mask(input_lengths)
+            s = s.transpose(0, 1)  # T x B x C -> B x T x C
+        else:
+            s = self.dim_proj(s)
+        # 增加语音的位置编码
+        # if self.embed_positions is not None:
+        #     positions = self.embed_positions(s_encoder_padding_mask)
+        #     s += positions
+        if self.layernorm_embedding is not None:
+            s = self.layernorm_embedding(s)
+        s = self.dropout_module(s)
+        # T x B x C
+        s = s.transpose(0, 1)
+
+        # 还需要让语音经过encoder
+        # for layer in self.transformer_layers:
+            # kv_prefix: T, B, D
+            # kv_padding: B, T
+            # s = layer(s, s_encoder_padding_mask)
+
+        if self.layer_norm is not None:
+            s = self.layer_norm(s)
+
+        # 2. 对文本编码
+        x_encoder_padding_mask = source.eq(self.padding_idx)
+        has_pads = source.device.type == "xla" or x_encoder_padding_mask.any()
+        x, _ = self.forward_embedding(source)
+        if has_pads:
+            x = x * (1 - x_encoder_padding_mask.unsqueeze(-1).type_as(x))
+
+        encoder_embedding = x
+        x = x.transpose(0, 1)  # B x T x C -> T x B x C
+
+        encoder_states = []
+        if return_all_hiddens:
+            encoder_states.append(x)
+
+        # 对文本编码的时候参考语音
+        # for layer in self.transformer_layers[:4]:
+        #     x = layer(x, x_encoder_padding_mask, kv_prefix=None)
+        #     if return_all_hiddens:
+        #         encoder_states.append(x)
+
+        for layer in self.transformer_layers[:]:
+            # kv_prefix: T, B, D
+            # kv_padding: B, T
+            x = layer(x, x_encoder_padding_mask, kv_prefix=s, kv_padding=s_encoder_padding_mask)
+            if return_all_hiddens:
+                encoder_states.append(x)
+
+        if self.layer_norm is not None:
+            x = self.layer_norm(x)
+
+        return {
+            "encoder_out": [x],  # T x B x C
+            "encoder_padding_mask": [x_encoder_padding_mask],  # B x T
             "encoder_embedding": [encoder_embedding],  # B x T x C
             "encoder_states": encoder_states,  # List[T x B x C]
             "src_tokens": [],

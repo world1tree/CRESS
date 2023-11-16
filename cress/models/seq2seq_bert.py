@@ -195,6 +195,7 @@ class BertEmbeddings(nn.Module):
         self.mustc_word_embeddings = nn.Embedding(10000, config.hidden_size, padding_idx=padding_idx)
         nn.init.normal_(self.mustc_word_embeddings.weight, mean=0, std=config.hidden_size ** -0.5)
         nn.init.constant_(self.mustc_word_embeddings.weight[padding_idx], 0)
+        # print("old value: ", self.mustc_word_embeddings.weight)
         # (512, 768)
         # self.mustc_position_embeddings = nn.Embedding(config.max_position_embeddings, config.hidden_size)
         # (1, 768), as long as it is different from the previous token_type embedding

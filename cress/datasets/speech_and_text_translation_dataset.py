@@ -42,6 +42,7 @@ class SpeechAndTextTranslationDatasetItem(object):
     concat: torch.Tensor = None
     type_indicator: torch.Tensor = None
     label: torch.Tensor = None
+    y_masked_info: torch.Tensor = None
     speaker_id: Optional[int] = None
 
 
@@ -228,7 +229,11 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
         # create input, mask should use bert tokenizer
         concat_text_tokenizer[selected] = self.bert_mask_id
 
-        return concat_text_tokenizer, label
+        # here we need extra info so that we can know which token is masked in origin y
+        x_size = seq_type_indicator.eq(0).sum()
+        y_mask = selected[x_size:]
+
+        return concat_text_tokenizer, label, y_mask
 
     def get_tokenized_text_with_bert(self, index: int):
         src_text = self.src_texts[index]
@@ -246,9 +251,9 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
         # strategy1: only truncate src text
         concat_text_tokenizer, seq_type_indicator = self.truncate_text_strategy1(index, src_text_tokenized, tgt_text_tokenized, max_length=512)
         # strategy2: truncate src and tgt text and keep src and tgt text almost same
-        concat_text_tokenizer, label = self.get_bert_input_and_label(concat_text_tokenizer, seq_type_indicator)
+        concat_text_tokenizer, label, y_mask = self.get_bert_input_and_label(concat_text_tokenizer, seq_type_indicator)
 
-        return concat_text_tokenizer, seq_type_indicator, label
+        return concat_text_tokenizer, seq_type_indicator, label, y_mask
 
     def get_tokenized_src_text(self, index: int):
         text = self.tokenize(self.pre_tokenizer, self.src_texts[index])
@@ -307,7 +312,11 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
         ).long()
 
         # tokenize x with bert and tokenize y with sentencepiece
-        concat_text_tokenizer, seq_type_indicator, label = self.get_tokenized_text_with_bert(index)
+        concat_text_tokenizer, seq_type_indicator, label, y_mask = self.get_tokenized_text_with_bert(index)
+
+        # we need get extra mask info in y so that we can calculate kl loss
+        y_masked_info = torch.zeros_like(target).bool()
+        y_masked_info[:y_mask.size(0)] = y_mask
 
         # False
         if self.cfg.prepend_tgt_lang_tag:
@@ -321,7 +330,7 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
             speaker_id = self.speaker_to_id[self.speakers[index]]
         return SpeechAndTextTranslationDatasetItem(
             index=index, audio=audio, source=source, target=target, speaker_id=speaker_id,
-            concat=concat_text_tokenizer, type_indicator=seq_type_indicator, label=label
+            concat=concat_text_tokenizer, type_indicator=seq_type_indicator, label=label, y_masked_info=y_masked_info
         )
 
     def __len__(self):
@@ -425,6 +434,14 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
             [x.concat.size(0) for x in samples], dtype=torch.long
         ).index_select(0, order)
 
+
+        y_masked_info = self.collate_tokens(
+            [x.y_masked_info for x in samples],
+            False
+        )
+        y_masked_info = y_masked_info.index_select(0, order)
+
+
         # True is padding
         concat_padding_mask = (~(fairseq_data_utils.lengths_to_padding_mask(concat_lengths))).long()
 
@@ -451,6 +468,7 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
             "nsentences": len(samples),
             "bert_input": bert_input,
             "bert_labels": label,
+            "y_masked_info": y_masked_info,
         }
         if return_order:
             out["order"] = order
