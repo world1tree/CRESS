@@ -223,8 +223,14 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
         label = concat_text_tokenizer.new_ones(concat_text_tokenizer.size(0), dtype=torch.long) * -100
         p = seq_type_indicator * 0.15
         selected = torch.bernoulli(p).bool()
+        # In fact, It's possible that there is mask token in above concat_text_tokenizer
+        # we will include them in label. the total mask ratio will be larger than 0.15
+        extra_mask = concat_text_tokenizer.eq(self.bert_mask_id) & seq_type_indicator.eq(1)
+        selected = selected | extra_mask
+
         # create label
         label[selected] = concat_text_tokenizer[selected]
+
         # create input, mask should use bert tokenizer
         concat_text_tokenizer[selected] = self.bert_mask_id
 

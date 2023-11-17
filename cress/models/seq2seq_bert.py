@@ -252,11 +252,12 @@ class BertEmbeddings(nn.Module):
             # for x: we use bert original embedding
             # for y: we use randomly embedding or mustc embedding except for mask and pad
 
+            # include x and padding
             x_indices = token_type_ids.eq(0)
-            # hard coded here
+            # hard coded here, include mask in y
             mask_indices = input_ids.eq(103) & token_type_ids.eq(1)
             # 0 will only be used as pad in y, sentencepiece 0 is <bos>, 1 is pad, but they shouldn't
-            # exist in y
+            # exist in y. this variable may be nothing
             pad_indices = input_ids.eq(0) & token_type_ids.eq(1)
 
             bert_part_indices = x_indices | mask_indices | pad_indices
