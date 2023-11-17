@@ -112,13 +112,13 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
 
     def forward_masked_lm(self, model, sample, reduce):
         bert_input = sample["bert_input"]
-        labels = sample["bert_labels"]
+        # labels = sample["bert_labels"]
         # B, T, 10000
         with torch.no_grad():
             logits = model(**bert_input).logits
             # this is masked_indices
-            mask_indices = labels.ne(-100)
-            # mask_indices = bert_input["input_ids"].eq(103) & bert_input["token_type_ids"].eq(1)
+            # mask_indices = labels.ne(-100)
+            mask_indices = bert_input["input_ids"].eq(103) & bert_input["token_type_ids"].eq(1)
             masked_logits = logits[mask_indices]
             masked_logits = torch.log_softmax(masked_logits, dim=-1)
 
