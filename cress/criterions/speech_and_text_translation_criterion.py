@@ -157,6 +157,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 student1_logits = student1_logits[sample["y_masked_info"]]
                 student2_logits = st_lprobs.view(bsz, tsz, -1)
                 student2_logits = student2_logits[sample["y_masked_info"]]
+                masked_num = sample["y_masked_info"].sum().item()
                 teacher_logits = self.forward_masked_lm(model.bert_model, sample, reduce)
                 kl_loss_st = F.kl_div(student1_logits, teacher_logits, log_target=True, reduction="none").sum(-1)
                 kl_loss_mt = F.kl_div(student2_logits, teacher_logits, log_target=True, reduction="none").sum(-1)
@@ -211,7 +212,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         ext_mt_sample_size = sum(log.get("ext_mt_sample_size", 0) for log in logging_outputs)
 
         metrics.log_scalar(
-            "loss", loss_sum / math.log(2), 1, round=3
+            "loss", loss_sum / st_sample_size / math.log(2) if st_sample_size != 0 else 0, st_sample_size, round=3
         )
         metrics.log_scalar(
             "st_loss", st_loss_sum / st_sample_size / math.log(2) if st_sample_size != 0 else 0, st_sample_size, round=3
@@ -226,7 +227,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "jsd_loss", jsd_loss_sum / mt_sample_size / math.log(2) if mt_sample_size != 0 else 0, mt_sample_size, round=3
         )
         metrics.log_scalar(
-            "kl_loss", kl_loss_sum / mt_sample_size / math.log(2) if mt_sample_size != 0 else 0, mt_sample_size, round=3
+            "kl_loss", kl_loss_sum / masked_num_sum / math.log(2) if masked_num_sum != 0 else 0, masked_num_sum, round=3
         )
         metrics.log_scalar(
             "ext_mt_loss", ext_mt_loss_sum / ext_mt_sample_size / math.log(2) if ext_mt_sample_size != 0 else 0, ext_mt_sample_size, round=3
