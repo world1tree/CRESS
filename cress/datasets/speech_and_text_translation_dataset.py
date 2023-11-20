@@ -105,9 +105,13 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
         self.append_eos = append_eos
         self.bert_tokenizer = bert_tokenizer
         self.bert_vocab = self.bert_tokenizer.get_vocab()
+        # 103
         self.bert_mask_id = self.bert_vocab[self.bert_tokenizer.mask_token]
+        # 100
         self.bert_unk_id = self.bert_vocab[self.bert_tokenizer.unk_token]
+        # 101
         self.bert_cls_id = self.bert_vocab[self.bert_tokenizer.cls_token]
+        # 102
         self.bert_sep_id = self.bert_vocab[self.bert_tokenizer.sep_token]
         # 0
         self.bert_pad_id = self.bert_vocab[self.bert_tokenizer.pad_token]
