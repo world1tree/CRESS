@@ -258,9 +258,11 @@ class BertEmbeddings(nn.Module):
             mask_indices = input_ids.eq(103) & token_type_ids.eq(1)
             # 0 will only be used as pad in y, sentencepiece 0 is <bos>, 1 is pad, but they shouldn't
             # exist in y. this variable may be nothing
-            pad_indices = input_ids.eq(0) & token_type_ids.eq(1)
+            # pad_indices = input_ids.eq(0) & token_type_ids.eq(1)
 
-            bert_part_indices = x_indices | mask_indices | pad_indices
+            # bert_part_indices = x_indices | mask_indices | pad_indices
+            # cls, x, sep and pad, mask
+            bert_part_indices = x_indices | mask_indices
             mustc_part_indices = ~bert_part_indices
 
             bert_all_embeds = self.word_embeddings(input_ids)
