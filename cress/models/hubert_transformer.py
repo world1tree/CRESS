@@ -69,7 +69,7 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
         )
         return S2THubInterface(x["args"], x["task"], x["models"][0])
 
-    def __init__(self, encoder, decoder, bert_model):
+    def __init__(self, encoder, decoder, bert_model, vocab_padding_mask):
         super().__init__(encoder, decoder)
         self.epoch = 1
         self.bert_model = bert_model
@@ -78,6 +78,8 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
         # freeze bert model
         for param in self.bert_model.parameters():
             param.requires_grad = False
+        # select final distribution
+        self.vocab_padding_mask = vocab_padding_mask
 
     def set_epoch(self, epoch):
         self.epoch = epoch
@@ -217,6 +219,11 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
             metavar="STR",
             help="path/to/hubert/model"
         )
+        parser.add_argument(
+            "--tgt-vocab-id-path",
+            type=str,
+            help="args for pad mask final distribution",
+        )
 
     @classmethod
     def build_encoder(cls, args, task=None, embed_tokens=None):
@@ -263,14 +270,29 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
             decoder.load_state_dict(mt_decoder_state_dict, strict=False)
 
         # load fine-tuned checkpoint path
+        logger.info("start loading bert model...")
         from cress.models.seq2seq_bert import BertForMaskedLM
         bert_fine_ckpt_path = args.bert_model_path
         bert_state = torch.load(bert_fine_ckpt_path)
         bert_model_state = bert_state["model"]
         bert_model = BertForMaskedLM.from_pretrained("bert-base-cased")
         bert_model.load_state_dict(bert_model_state, strict=True)
+        logger.info("loading bert mode done.")
 
-        return cls(encoder, decoder, bert_model)
+        logger.info("start loading tgt padding vocab id...")
+        tgt_vocab_id_path = getattr(args, "tgt_vocab_id_path")
+        import pickle
+        with open(tgt_vocab_id_path, "rb") as f:
+            tgt_unique_id = pickle.load(f)
+        # hard code the tgt vocab size
+        tgt_vocab_size = 10000
+        padding_mask = [False for _ in range(tgt_vocab_size)]
+        for id in tgt_unique_id:
+            padding_mask[id] = True
+        padding_mask = torch.tensor(padding_mask, dtype=torch.bool)
+        logger.info("loading tgt padding vocab id done.")
+
+        return cls(encoder, decoder, bert_model, padding_mask)
 
     def get_normalized_probs(
         self,

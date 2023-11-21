@@ -82,7 +82,9 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "prev_output_tokens": sample["net_input"]["prev_output_tokens"],
         }
         audio_output = model(**audio_input)
-        loss, _, lprobs, target = self.compute_loss_with_lprobs(model, audio_output, sample, reduce=reduce)
+        loss, _, _, target = self.compute_loss_with_lprobs(model, audio_output, sample, reduce=reduce)
+
+        lprobs = F.log_softmax(audio_output[0][:,:,model.vocab_padding_mask], dim=-1)
         return loss, lprobs, target
     
     def forward_mt(self, model, sample, reduce):
@@ -93,8 +95,9 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "prev_output_tokens": sample["net_input"]["prev_output_tokens"],
         }
         text_output = model(**text_input)
-        loss, _ = self.compute_loss(model, text_output, sample, reduce=reduce)
-        return loss
+        loss, _, _, target = self.compute_loss_with_lprobs(model, text_output, sample, reduce=reduce)
+        lprobs = F.log_softmax(text_output[0][:,:,model.vocab_padding_mask], dim=-1)
+        return loss, lprobs, target
 
     def forward_x_cross_s(self, model, sample, reduce):
         text_input = {
@@ -107,20 +110,23 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         decoder_out = model.decoder(
             prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
         )
-        loss, _, lprobs, target = self.compute_loss_with_lprobs(model, decoder_out, sample, reduce=reduce)
+        loss, _, _, target = self.compute_loss_with_lprobs(model, decoder_out, sample, reduce=reduce)
+        lprobs = F.log_softmax(decoder_out[0][:,:,model.vocab_padding_mask], dim=-1)
         return loss, lprobs, target
 
     def forward_masked_lm(self, model, sample, reduce):
+        bert_model = model.bert_model
         bert_input = sample["bert_input"]
         # labels = sample["bert_labels"]
         # B, T, 10000
         with torch.no_grad():
-            logits = model(**bert_input).logits
+            logits = bert_model(**bert_input).logits
             # this is masked_indices
             # mask_indices = labels.ne(-100)
             mask_indices = bert_input["input_ids"].eq(103) & bert_input["token_type_ids"].eq(1)
             masked_logits = logits[mask_indices]
-            masked_logits = torch.log_softmax(masked_logits, dim=-1)
+            # masked_logits = torch.log_softmax(masked_logits, dim=-1)
+            masked_logits = F.log_softmax(masked_logits[:,model.vocab_padding_mask], dim=-1)
 
         return masked_logits
 
@@ -150,15 +156,16 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             if self.mt_finetune and self.training:
                 st_loss, st_lprobs, st_target = self.forward_st(model, sample, reduce)
                 # mt_loss = self.forward_mt(model, sample, reduce)
+                # mt_loss, x_cross_s_lprobs, mt_target = self.forward_mt(model, sample, reduce)
                 mt_loss, x_cross_s_lprobs, mt_target = self.forward_x_cross_s(model, sample, reduce)
 
                 # use bert as teacher, use st and mt as student
-                student1_logits = x_cross_s_lprobs.view(bsz, tsz, -1)
+                student1_logits = x_cross_s_lprobs
                 student1_logits = student1_logits[sample["y_masked_info"]]
-                student2_logits = st_lprobs.view(bsz, tsz, -1)
+                student2_logits = st_lprobs
                 student2_logits = student2_logits[sample["y_masked_info"]]
                 masked_num = sample["y_masked_info"].sum().item()
-                teacher_logits = self.forward_masked_lm(model.bert_model, sample, reduce)
+                teacher_logits = self.forward_masked_lm(model, sample, reduce)
                 kl_loss_st = F.kl_div(student1_logits, teacher_logits, log_target=True, reduction="none").sum(-1)
                 kl_loss_mt = F.kl_div(student2_logits, teacher_logits, log_target=True, reduction="none").sum(-1)
                 kl_loss = (kl_loss_st.sum() + kl_loss_mt.sum()) / 2
