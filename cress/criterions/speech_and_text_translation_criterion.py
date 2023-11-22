@@ -131,7 +131,8 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "prev_output_tokens": sample["net_input"]["prev_output_tokens"],
         }
         text_output = model(**text_input)
-        lprobs = F.log_softmax(text_output[0], dim=-1)
+        # 一定要用float32, 否则会溢出
+        lprobs = F.log_softmax(text_output[0], dim=-1, dtype=torch.float32)
         target = sample["target"]
         selected = sample["concat_input"]["y_masked_info"]
         # only calculate loss for selected tokens
@@ -166,6 +167,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         if mode == "st":
             # st + mt
             if self.mt_finetune and self.training:
+                st_size = mt_size = sample_size = sample["ntokens"]
                 concat_loss, concat_lprobs_selected, selected = self.forward_concat(model, sample, reduce)
                 masked_num = selected.sum().item()
                 st_loss, st_lprobs, st_target = self.forward_st(model, sample, reduce)
@@ -181,13 +183,13 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 jsd2 = self.compute_jsd_loss_without_pad(x_cross_s_lprobs_selected, concat_lprobs_selected)
                 jsd_loss2 = (jsd1 + jsd2) / 2.0
 
-                loss = concat_loss + st_loss + mt_loss + jsd_loss + jsd_loss2
-                st_size = mt_size = sample_size = sample["ntokens"]
+                # We need average loss per token
+                loss = ((concat_loss + jsd_loss2) / masked_num) + ((st_loss + mt_loss + jsd_loss) / sample_size)
             # st(dev or train only)
             else:
-                st_loss, _, _ = self.forward_st(model, sample, reduce)
-                loss = st_loss
                 st_size = sample_size = sample["ntokens"]
+                st_loss, _, _ = self.forward_st(model, sample, reduce)
+                loss = st_loss / sample_size
         elif mode == "ext_mt":
             loss = ext_mt_loss = self.forward_ext_mt(model, sample, reduce)
             ext_mt_size = sample_size = sample["ntokens"]
@@ -228,7 +230,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         masked_num_sum = sum(log.get("masked_num", 0) for log in logging_outputs)
 
         metrics.log_scalar(
-            "loss", loss_sum / sample_size / math.log(2), sample_size, round=3
+            "loss", loss_sum / math.log(2), 1, round=3
         )
         metrics.log_scalar(
             "st_loss", st_loss_sum / st_sample_size / math.log(2) if st_sample_size != 0 else 0, st_sample_size, round=3
