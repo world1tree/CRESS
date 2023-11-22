@@ -39,6 +39,10 @@ class SpeechAndTextTranslationDatasetItem(object):
     audio: torch.Tensor
     source: torch.Tensor
     target: torch.Tensor
+    concat: torch.Tensor
+    type_indicator: torch.Tensor
+    label: torch.Tensor
+    y_masked_info: torch.Tensor
     speaker_id: Optional[int] = None
 
 
@@ -99,6 +103,7 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
         self.src_lens = self.get_src_lens_and_check_oov()
         self.tgt_lens = self.get_tgt_lens_and_check_oov()
         self.append_eos = append_eos
+        self.pad_id = self.tgt_dict.pad()
 
         logger.info(self.__repr__())
 
@@ -226,15 +231,86 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
             )
             target = torch.cat((torch.LongTensor([lang_tag_idx]), target), 0)
 
+        # concat tokenized x and y
+        text_tokenized_concat, seq_type_indicator = self.get_tokenized_text_concat(index, source, target, max_length=512)
+        concat_text_tokenizer, label, y_mask = self.get_concat_input_and_label(text_tokenized_concat, seq_type_indicator)
+
+        y_masked_info = torch.zeros_like(target).bool()
+        y_masked_info[:y_mask.size(0)] = y_mask
+
         speaker_id = None
         if self.speaker_to_id is not None:
             speaker_id = self.speaker_to_id[self.speakers[index]]
         return SpeechAndTextTranslationDatasetItem(
-            index=index, audio=audio, source=source, target=target, speaker_id=speaker_id
+            index=index, audio=audio, source=source, target=target, speaker_id=speaker_id,
+            concat=concat_text_tokenizer, type_indicator=seq_type_indicator, label=label, y_masked_info=y_masked_info
         )
+
+    def get_concat_input_and_label(self, concat_text_tokenizer, seq_type_indicator):
+        # -100 will be ignored when calculate loss
+        label = concat_text_tokenizer.new_ones(concat_text_tokenizer.size(0), dtype=torch.long) * -100
+        p = seq_type_indicator * 0.15
+        selected = torch.bernoulli(p).bool()
+
+        # Here, we simply zero out the selected tokens in the input
+
+        # create label
+        label[selected] = concat_text_tokenizer[selected]
+        # create input
+        concat_text_tokenizer[selected] = self.pad_id
+
+        # here we need extra info so that we can know which token is masked in origin y
+        x_size = seq_type_indicator.eq(0).sum()
+        y_mask = selected[x_size:]
+
+        return concat_text_tokenizer, label, y_mask
+
+    def get_tokenized_text_concat(self, index, src_text_tokenized, tgt_text_tokenized, max_length=512):
+        src_length = src_text_tokenized.size(0)
+        tgt_length = tgt_text_tokenized.size(0)
+        total_length = src_length + tgt_length
+        if total_length <= max_length:
+            text_tokenized = torch.concat([src_text_tokenized, tgt_text_tokenized], dim=0)
+            seq_type_indicator = text_tokenized.new_zeros(text_tokenized.size(0), dtype=torch.long)
+            seq_type_indicator[:src_length] = 0
+            seq_type_indicator[src_length:] = 1
+        else:
+            # I think it is not too many
+            logger.warning(f"id: {index}, text length is {total_length}, longer than 512, truncate it")
+            # truncate tgt text, will skip src in extreme situation
+            tgt_text_tokenized = tgt_text_tokenized[:min(tgt_length, max_length)]
+            left_length = total_length - tgt_text_tokenized.size(0)
+            # truncate src text
+            src_text_tokenized = src_text_tokenized[:left_length]
+            # concat src text and tgt text
+            text_tokenized = torch.concat([src_text_tokenized, tgt_text_tokenized], dim=0)
+
+            seq_type_indicator = text_tokenized.new_zeros(text_tokenized.size(0), dtype=torch.long)
+            seq_type_indicator[:-left_length] = 0
+            seq_type_indicator[-left_length:] = 1
+
+        return text_tokenized, seq_type_indicator
 
     def __len__(self):
         return self.n_samples
+
+    def collate_tokens(
+            self,
+            values,
+            pad_idx,
+    ):
+        size = max(v.size(0) for v in values)
+
+        batch_size = len(values)
+        res = values[0].new(batch_size, size).fill_(pad_idx)
+
+        def copy_tensor(src, dst):
+            assert dst.numel() == src.numel()
+            dst.copy_(src)
+
+        for i, v in enumerate(values):
+            copy_tensor(v, res[i][: len(v)])
+        return res
 
     def collater(
         self, samples: List[SpeechAndTextTranslationDatasetItem], return_order: bool = False
@@ -293,6 +369,46 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
                 .view(-1, 1)
             )
 
+        concat = self.collate_tokens(
+            [x.concat for x in samples],
+            self.pad_id,
+        )
+        concat = concat.index_select(0, order)
+
+        type_indicator = self.collate_tokens(
+            [x.type_indicator for x in samples],
+            -100,   # 0 is x, 1 is y, -100 is padding
+        )
+        type_indicator = type_indicator.index_select(0, order)
+
+        # label = self.collate_tokens(
+        #     [x.label for x in samples],
+        #     -100,  # -100 will be ignored when calculate loss
+        # )
+        # label = label.index_select(0, order)
+
+        concat_lengths = torch.tensor(
+            [x.concat.size(0) for x in samples], dtype=torch.long
+        ).index_select(0, order)
+
+        y_masked_info = self.collate_tokens(
+            [x.y_masked_info for x in samples],
+            False
+        )
+        y_masked_info = y_masked_info.index_select(0, order)
+
+        # True is padding
+        # concat_padding_mask = (~(fairseq_data_utils.lengths_to_padding_mask(concat_lengths))).long()
+
+        concat_input = {
+            "source": concat,
+            "source_lengths": concat_lengths,
+            "token_type_ids": type_indicator,
+            # "label": label,
+            "y_masked_info": y_masked_info,
+            # "attention_mask": concat_padding_mask,
+        }
+
         net_input = {
             "audio": frames,
             "audio_lengths": n_frames,
@@ -308,6 +424,7 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
             "target_lengths": target_lengths,
             "ntokens": ntokens,
             "nsentences": len(samples),
+            "concat_input": concat_input,
         }
         if return_order:
             out["order"] = order

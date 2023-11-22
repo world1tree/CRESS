@@ -436,10 +436,10 @@ class HubertTransformerEncoder(FairseqEncoder):
         s = s.transpose(0, 1)
 
         # 还需要让语音经过encoder
-        for layer in self.transformer_layers:
+        # for layer in self.transformer_layers:
             # kv_prefix: T, B, D
             # kv_padding: B, T
-            s = layer(s, s_encoder_padding_mask)
+            # s = layer(s, s_encoder_padding_mask)
 
         if self.layer_norm is not None:
             s = self.layer_norm(s)
