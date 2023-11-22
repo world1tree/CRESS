@@ -75,11 +75,11 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         return kl_loss
 
     def compute_kl_loss(self, st_lprobs, mt_lprobs, teacher_lprobs):
-        kl_loss_st = F.kl_div(st_lprobs, teacher_lprobs, log_target=True, reduction="none").sum(-1)
-        kl_loss_mt = F.kl_div(mt_lprobs, teacher_lprobs, log_target=True, reduction="none").sum(-1)
+        kl_loss_st = F.kl_div(st_lprobs, teacher_lprobs.detach(), log_target=True, reduction="none").sum(-1)
+        kl_loss_mt = F.kl_div(mt_lprobs, teacher_lprobs.detach(), log_target=True, reduction="none").sum(-1)
         kl_loss_st = kl_loss_st.sum()
         kl_loss_mt = kl_loss_mt.sum()
-        kl_loss = kl_loss_st + kl_loss_mt
+        kl_loss = (kl_loss_st + kl_loss_mt) / 2.0
         return kl_loss
 
     def forward_st(self, model, sample, reduce):
@@ -179,12 +179,12 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 st_lprobs_selected = st_lprobs.view(bsz, seq_len, -1)[selected]
                 x_cross_s_lprobs_selected = x_cross_s_lprobs.view(bsz, seq_len, -1)[selected]
 
-                jsd1 = self.compute_jsd_loss_without_pad(st_lprobs_selected, concat_lprobs_selected)
-                jsd2 = self.compute_jsd_loss_without_pad(x_cross_s_lprobs_selected, concat_lprobs_selected)
-                jsd_loss2 = (jsd1 + jsd2) / 2.0
+                # jsd1 = self.compute_jsd_loss_without_pad(st_lprobs_selected, concat_lprobs_selected)
+                # jsd2 = self.compute_jsd_loss_without_pad(x_cross_s_lprobs_selected, concat_lprobs_selected)
+                jsd_loss2 = self.compute_kl_loss(st_lprobs_selected, x_cross_s_lprobs_selected, concat_lprobs_selected)
 
                 # We need average loss per token
-                loss = ((concat_loss + jsd_loss2) / masked_num) + ((st_loss + mt_loss + jsd_loss) / sample_size)
+                loss = 0.3 * ((concat_loss + jsd_loss2) / masked_num) + 0.7 * ((st_loss + mt_loss + jsd_loss) / sample_size)
             # st(dev or train only)
             else:
                 st_size = sample_size = sample["ntokens"]
