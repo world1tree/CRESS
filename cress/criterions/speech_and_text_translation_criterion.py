@@ -161,20 +161,20 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 st_selected = st_lprobs.view(bsz, seq_len, -1)[common_correct_matrix]
                 mt_selected = mt_lprbs.view(bsz, seq_len, -1)[common_correct_matrix]
                 part1_loss = self.compute_jsd_loss_without_pad(st_selected, mt_selected)
-                common_tokens_correct = common_correct_matrix.sum()
+                common_tokens_correct = common_correct_matrix.sum().item()
                 # st和mt中, 仅st能预测正确的单词
-                st_correct_matrix = st_correct_matrix & (~mt_correct_matrix)
+                st_correct_of_mt_matrix = st_correct_matrix & (~mt_correct_matrix)
                 st_selected = st_lprobs.view(bsz, seq_len, -1)[st_correct_matrix]
                 mt_selected = mt_lprbs.view(bsz, seq_len, -1)[st_correct_matrix]
                 part2_loss = F.kl_div(mt_selected, st_selected.detach(), log_target=True, reduction="none").sum(-1).sum()
-                st_tokens_correct_of_mt = st_correct_matrix.sum().item()
+                st_tokens_correct_of_mt = st_correct_of_mt_matrix.sum().item()
                 assert st_tokens_correct_of_mt == st_tokens_correct - common_tokens_correct
                 # st和mt中，仅mt能预测正确的单词
-                mt_correct_matrix = mt_correct_matrix & (~st_correct_matrix)
+                mt_correct_of_st_matrix = mt_correct_matrix & (~st_correct_matrix)
                 st_selected = st_lprobs.view(bsz, seq_len, -1)[mt_correct_matrix]
                 mt_selected = mt_lprbs.view(bsz, seq_len, -1)[mt_correct_matrix]
                 part3_loss = F.kl_div(st_selected, mt_selected.detach(), log_target=True, reduction="none").sum(-1).sum()
-                mt_tokens_correct_of_st = mt_correct_matrix.sum().item()
+                mt_tokens_correct_of_st = mt_correct_of_st_matrix.sum().item()
                 assert mt_tokens_correct_of_st == mt_tokens_correct - common_tokens_correct
                 # st和mt都不能预测正确的单词, 需要排除padding
                 st_mt_incorrect_matrix = (~st_correct_matrix) & (~mt_correct_matrix) & (~target_pading_mask)
