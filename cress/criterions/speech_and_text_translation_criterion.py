@@ -251,23 +251,23 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "ext_mt_loss", ext_mt_loss_sum / ext_mt_sample_size / math.log(2) if ext_mt_sample_size != 0 else 0, ext_mt_sample_size, round=3
         )
         metrics.log_scalar(
-            "common_accuracy", common_tokens_correct_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
+            "common_accuracy", common_tokens_correct_sum / sample_size if sample_size != 0 else 0, sample_size, round=3
         )
         metrics.log_scalar(
-            "st_accuracy", st_tokens_correct_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
+            "st_accuracy", st_tokens_correct_sum / sample_size if sample_size != 0 else 0, sample_size, round=3
         )
         metrics.log_scalar(
-            "mt_accuracy", mt_tokens_correct_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
+            "mt_accuracy", mt_tokens_correct_sum / sample_size if sample_size != 0 else 0, sample_size, round=3
         )
         # 只有st会，而mt不会翻译的单词占比
         metrics.log_scalar(
-            "st_accuracy_except_mt", st_tokens_correct_except_mt_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
+            "st_accuracy_except_mt", st_tokens_correct_except_mt_sum / sample_size if sample_size != 0 else 0, sample_size, round=3
         )
         metrics.log_scalar(
-            "mt_accuracy_except_st", mt_tokens_correct_except_st_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
+            "mt_accuracy_except_st", mt_tokens_correct_except_st_sum / sample_size if sample_size != 0 else 0, sample_size, round=3
         )
         metrics.log_scalar(
-            "hard_word_percentage", hard_tokens_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
+            "hard_word_percentage", hard_tokens_sum / sample_size if sample_size != 0 else 0, sample_size, round=3
         )
 
     @staticmethod
