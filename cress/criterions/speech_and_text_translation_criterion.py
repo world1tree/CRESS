@@ -144,7 +144,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         jsd_loss = torch.Tensor([0])
         st_size, mt_size, ext_mt_size = 0, 0, 0
         common_tokens_correct = st_tokens_correct = mt_tokens_correct = 0
-        st_tokens_correct_of_mt = mt_tokens_correct_of_st = 0
+        st_tokens_correct_except_mt = mt_tokens_correct_except_st = 0
         hard_tokens = 0
 
         mode = sample["net_input"]["mode"]
@@ -162,20 +162,20 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 mt_selected = mt_lprbs.view(bsz, seq_len, -1)[common_correct_matrix]
                 part1_loss = self.compute_jsd_loss_without_pad(st_selected, mt_selected)
                 common_tokens_correct = common_correct_matrix.sum().item()
-                # st和mt中, 仅st能预测正确的单词
+                # st和mt中, 仅st能预测正确的单词(st擅长的)
                 st_correct_of_mt_matrix = st_correct_matrix & (~mt_correct_matrix)
                 st_selected = st_lprobs.view(bsz, seq_len, -1)[st_correct_matrix]
                 mt_selected = mt_lprbs.view(bsz, seq_len, -1)[st_correct_matrix]
                 part2_loss = F.kl_div(mt_selected, st_selected.detach(), log_target=True, reduction="none").sum(-1).sum()
-                st_tokens_correct_of_mt = st_correct_of_mt_matrix.sum().item()
-                assert st_tokens_correct_of_mt == st_tokens_correct - common_tokens_correct
-                # st和mt中，仅mt能预测正确的单词
+                st_tokens_correct_except_mt = st_correct_of_mt_matrix.sum().item()
+                assert st_tokens_correct_except_mt == st_tokens_correct - common_tokens_correct
+                # st和mt中，仅mt能预测正确的单词(mt擅长的)
                 mt_correct_of_st_matrix = mt_correct_matrix & (~st_correct_matrix)
                 st_selected = st_lprobs.view(bsz, seq_len, -1)[mt_correct_matrix]
                 mt_selected = mt_lprbs.view(bsz, seq_len, -1)[mt_correct_matrix]
                 part3_loss = F.kl_div(st_selected, mt_selected.detach(), log_target=True, reduction="none").sum(-1).sum()
-                mt_tokens_correct_of_st = mt_correct_of_st_matrix.sum().item()
-                assert mt_tokens_correct_of_st == mt_tokens_correct - common_tokens_correct
+                mt_tokens_correct_except_st = mt_correct_of_st_matrix.sum().item()
+                assert mt_tokens_correct_except_st == mt_tokens_correct - common_tokens_correct
                 # st和mt都不能预测正确的单词, 需要排除padding
                 st_mt_incorrect_matrix = (~st_correct_matrix) & (~mt_correct_matrix) & (~target_pading_mask)
                 # part4_loss = self.compute_jsd_loss_without_pad(st_lprobs, mt_lprbs)
@@ -208,8 +208,8 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "common_tokens_correct": common_tokens_correct,
             "st_tokens_correct": st_tokens_correct,
             "mt_tokens_correct": mt_tokens_correct,
-            "st_tokens_correct_of_mt": st_tokens_correct_of_mt,
-            "mt_tokens_correct_of_st": mt_tokens_correct_of_st,
+            "st_tokens_correct_except_mt": st_tokens_correct_except_mt,
+            "mt_tokens_correct_except_st": mt_tokens_correct_except_st,
             "hard_tokens": hard_tokens,
         }
         
@@ -231,8 +231,8 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         common_tokens_correct_sum = sum(log.get("common_tokens_correct", 0) for log in logging_outputs)
         st_tokens_correct_sum = sum(log.get("st_tokens_correct", 0) for log in logging_outputs)
         mt_tokens_correct_sum = sum(log.get("mt_tokens_correct", 0) for log in logging_outputs)
-        st_tokens_correct_of_mt_sum = sum(log.get("st_tokens_correct_of_mt", 0) for log in logging_outputs)
-        mt_tokens_correct_of_st_sum = sum(log.get("mt_tokens_correct_of_st", 0) for log in logging_outputs)
+        st_tokens_correct_except_mt_sum = sum(log.get("st_tokens_correct_except_mt", 0) for log in logging_outputs)
+        mt_tokens_correct_except_st_sum = sum(log.get("mt_tokens_correct_except_st", 0) for log in logging_outputs)
         hard_tokens_sum = sum(log.get("hard_tokens", 0) for log in logging_outputs)
 
         metrics.log_scalar(
@@ -259,14 +259,15 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         metrics.log_scalar(
             "mt_accuracy", mt_tokens_correct_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
         )
+        # 只有st会，而mt不会翻译的单词占比
         metrics.log_scalar(
-            "st_accuracy_of_mt", st_tokens_correct_of_mt_sum / mt_tokens_correct_sum / math.log(2) if mt_tokens_correct_sum != 0 else 0, mt_tokens_correct_sum, round=3
+            "st_accuracy_except_mt", st_tokens_correct_except_mt_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
         )
         metrics.log_scalar(
-            "mt_accuracy_of_st", mt_tokens_correct_of_st_sum / st_tokens_correct_sum / math.log(2) if st_tokens_correct_sum != 0 else 0, st_tokens_correct_sum, round=3
+            "mt_accuracy_except_st", mt_tokens_correct_except_st_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
         )
         metrics.log_scalar(
-            "hard_accuracy", hard_tokens_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
+            "hard_word_percentage", hard_tokens_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
         )
 
     @staticmethod
