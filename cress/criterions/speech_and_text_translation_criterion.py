@@ -79,30 +79,38 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "src_tokens": sample["net_input"]["audio"],
             "src_lengths": sample["net_input"]["audio_lengths"],
             "mode": "st",
-            "prev_output_tokens": sample["net_input"]["prev_output_tokens"],
         }
-        audio_output = model(**audio_input)
+        prev_output_tokens = sample["net_input"]["prev_output_tokens"]
+
+        encoder_out = model.encoder(**audio_input)
+        audio_output = model.decoder(
+            prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
+        )
 
         with torch.no_grad():
-            all_tokens, st_correct_tokens, st_correct_matrix = self.collect_result(model, audio_output, sample)
+            all_tokens, st_correct_tokens, st_correct_matrix, st_probs = self.collect_result(model, audio_output, sample)
 
         loss, _, lprobs, target = self.compute_loss_with_lprobs(model, audio_output, sample, reduce=reduce)
-        return loss, lprobs, target, all_tokens, st_correct_tokens, st_correct_matrix
+        return loss, lprobs, target, all_tokens, st_correct_tokens, st_correct_matrix, st_probs, encoder_out
     
     def forward_mt(self, model, sample, reduce):
         text_input = {
             "src_tokens": sample["net_input"]["source"],
             "src_lengths": sample["net_input"]["source_lengths"],
             "mode": "mt",
-            "prev_output_tokens": sample["net_input"]["prev_output_tokens"],
         }
-        text_output = model(**text_input)
+        prev_output_tokens = sample["net_input"]["prev_output_tokens"]
+
+        encoder_out = model.encoder(**text_input)
+        text_output = model.decoder(
+            prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
+        )
 
         with torch.no_grad():
-            all_tokens, mt_correct_tokens, mt_correct_matrix = self.collect_result(model, text_output, sample)
+            all_tokens, mt_correct_tokens, mt_correct_matrix, mt_probs = self.collect_result(model, text_output, sample)
 
         loss, _, lprobs, target = self.compute_loss_with_lprobs(model, text_output, sample, reduce=reduce)
-        return loss, lprobs, target, all_tokens, mt_correct_tokens, mt_correct_matrix
+        return loss, lprobs, target, all_tokens, mt_correct_tokens, mt_correct_matrix, mt_probs, encoder_out
 
     def forward_x_cross_s(self, model, sample, reduce):
         text_input = {
@@ -124,6 +132,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         return loss
 
     def collect_result(self, model, decoder_output, sample):
+        probs = model.get_normalized_probs(decoder_output, log_probs=False)
         lprobs = model.get_normalized_probs(decoder_output, log_probs=True)
         target = model.get_targets(sample, decoder_output)
         pred = torch.argmax(lprobs, dim=-1)
@@ -131,7 +140,50 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         batch_tokens = int(torch.sum(~pad_mask).item())
         correct_matrix = pred.eq(target) & (~pad_mask)
         correct_tokens = int(torch.sum(correct_matrix).item())
-        return batch_tokens, correct_tokens, correct_matrix.detach()
+        return batch_tokens, correct_tokens, correct_matrix.detach(), probs.detach()
+
+    def forward_hard_words(self, model, sample, audio_enc, text_enc, st_probs, mt_probs, st_mt_incorrect_matrix):
+        prev_output_tokens = sample["net_input"]["prev_output_tokens"]
+        target = sample["target"]
+        # tokens, dim
+        st_selected = st_probs[st_mt_incorrect_matrix]
+        # tokens, dim
+        mt_selected = mt_probs[st_mt_incorrect_matrix]
+        # tokens, 1
+        target_selected = target[st_mt_incorrect_matrix].unsqueeze(-1)
+
+        # get hypo of mt, tokens(after softmax)
+        hypo_mt = mt_selected.gather(dim=-1, index=target_selected).squeeze(-1).sum()
+        # get hypo of st, tokens(after softmax)
+        hypo_st = st_selected.gather(dim=-1, index=target_selected).squeeze(-1).sum()
+        # get importance of st and mt for hard words
+        importance_st = hypo_st / (hypo_st + hypo_mt)
+        importance_mt = hypo_mt / (hypo_st + hypo_mt)
+
+        # currently we only concat[s, x] and let y to select from them automatically
+        mix_encoder_out = {
+            "encoder_out": [torch.concat([audio_enc["encoder_out"][0], text_enc["encoder_out"][0]], dim=0)],  # T x B x C
+            "encoder_padding_mask": [torch.concat([audio_enc["encoder_padding_mask"][0], text_enc["encoder_padding_mask"][0]], dim=1)],  # B x T
+            "encoder_embedding": [None],  # B x T x C
+            "encoder_states": None,  # List[T x B x C]
+            "src_tokens": [],
+            "src_lengths": [],
+        }
+
+        mix_output = model.decoder(
+            prev_output_tokens=prev_output_tokens, encoder_out=mix_encoder_out
+        )
+
+        lprobs = model.get_normalized_probs(mix_output, log_probs=True)
+        lprobs_selected = lprobs[st_mt_incorrect_matrix]
+
+        loss, nll_loss = label_smoothed_nll_loss(
+            lprobs_selected,
+            target_selected,
+            self.eps,
+            ignore_index=self.padding_idx,
+        )
+        return loss, lprobs_selected
 
     def forward(self, model, sample, reduce=True):
         """Compute the loss for the given sample.
@@ -142,6 +194,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         """
         st_loss, mt_loss, ext_mt_loss = torch.Tensor([0]), torch.Tensor([0]), torch.Tensor([0])
         jsd_loss = torch.Tensor([0])
+        hard_tokens_loss = torch.Tensor([0])
         st_size, mt_size, ext_mt_size = 0, 0, 0
         common_tokens_correct = st_tokens_correct = mt_tokens_correct = 0
         st_tokens_correct_except_mt = mt_tokens_correct_except_st = 0
@@ -153,8 +206,8 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             if self.mt_finetune and self.training:
                 target_pading_mask = sample["target"].eq(self.padding_idx)
                 bsz, seq_len = sample["target"].shape
-                st_loss, st_lprobs, st_target, st_all_tokens, st_tokens_correct, st_correct_matrix = self.forward_st(model, sample, reduce)
-                mt_loss, mt_lprbs, mt_target, mt_all_tokens, mt_tokens_correct, mt_correct_matrix = self.forward_mt(model, sample, reduce)
+                st_loss, st_lprobs, st_target, st_all_tokens, st_tokens_correct, st_correct_matrix, st_probs, audio_enc_out = self.forward_st(model, sample, reduce)
+                mt_loss, mt_lprbs, mt_target, mt_all_tokens, mt_tokens_correct, mt_correct_matrix, mt_probs, text_enc_out = self.forward_mt(model, sample, reduce)
                 assert st_all_tokens == mt_all_tokens == sample["ntokens"]
                 # 都能预测正确的单词
                 common_correct_matrix = st_correct_matrix & mt_correct_matrix
@@ -178,15 +231,28 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 assert mt_tokens_correct_except_st == mt_tokens_correct - common_tokens_correct
                 # st和mt都不能预测正确的单词, 需要排除padding
                 st_mt_incorrect_matrix = (~st_correct_matrix) & (~mt_correct_matrix) & (~target_pading_mask)
+                st_selected = st_lprobs.view(bsz, seq_len, -1)[st_mt_incorrect_matrix]
+                mt_selected = mt_lprbs.view(bsz, seq_len, -1)[st_mt_incorrect_matrix]
+                hard_tokens_loss, mix_selected = self.forward_hard_words(model,
+                                                     sample,
+                                                     audio_enc_out,
+                                                     text_enc_out,
+                                                     st_probs,
+                                                     mt_probs,
+                                                     st_mt_incorrect_matrix
+                                                     )
+                part4_loss = (F.kl_div(mt_selected, mix_selected.detach(), log_target=True, reduction="none").sum(-1).sum() + \
+                                F.kl_div(st_selected, mix_selected.detach(), log_target=True, reduction="none").sum(-1).sum()) / 2.0
+
                 # part4_loss = self.compute_jsd_loss_without_pad(st_lprobs, mt_lprbs)
                 hard_tokens = st_mt_incorrect_matrix.sum().item()
                 assert hard_tokens == sample["ntokens"] - st_tokens_correct - mt_tokens_correct + common_tokens_correct
-                jsd_loss = part1_loss + part2_loss + part3_loss
-                loss = st_loss + mt_loss + jsd_loss
+                jsd_loss = part1_loss + part2_loss + part3_loss + part4_loss
+                loss = st_loss + mt_loss + hard_tokens_loss + jsd_loss
                 st_size = mt_size = sample_size = sample["ntokens"]
             # st(dev or train only)
             else:
-                st_loss, _, _, st_all_tokens, st_tokens_correct, st_correct_matrix = self.forward_st(model, sample, reduce)
+                st_loss, _, _, st_all_tokens, st_tokens_correct, st_correct_matrix, _, _ = self.forward_st(model, sample, reduce)
                 loss = st_loss
                 st_size = sample_size = sample["ntokens"]
         elif mode == "ext_mt":
@@ -199,6 +265,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "st_sample_size": st_size,
             "mt_loss": mt_loss.data,
             "mt_sample_size": mt_size,
+            "hard_tokens_loss": hard_tokens_loss.data,
             "jsd_loss": jsd_loss.data,
             "ext_mt_loss": ext_mt_loss.data,
             "ext_mt_sample_size": ext_mt_size,
@@ -222,6 +289,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         st_loss_sum = sum(log.get("st_loss", 0) for log in logging_outputs)
         mt_loss_sum = sum(log.get("mt_loss", 0) for log in logging_outputs)
         ext_mt_loss_sum = sum(log.get("ext_mt_loss", 0) for log in logging_outputs)
+        hard_tokens_loss_sum = sum(log.get("hard_tokens_loss", 0) for log in logging_outputs)
         sample_size = sum(log.get("sample_size", 0) for log in logging_outputs)
         st_sample_size = sum(log.get("st_sample_size", 0) for log in logging_outputs)
         mt_sample_size = sum(log.get("mt_sample_size", 0) for log in logging_outputs)
@@ -243,6 +311,9 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         )
         metrics.log_scalar(
             "mt_loss", mt_loss_sum / mt_sample_size / math.log(2) if mt_sample_size != 0 else 0, mt_sample_size, round=3
+        )
+        metrics.log_scalar(
+            "hard_tokens_loss", hard_tokens_loss_sum / hard_tokens_sum / math.log(2) if hard_tokens_sum != 0 else 0, hard_tokens_sum, round=3
         )
         metrics.log_scalar(
             "jsd_loss", jsd_loss_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
