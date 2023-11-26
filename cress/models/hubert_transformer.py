@@ -436,13 +436,13 @@ class HubertTransformerEncoder(FairseqEncoder):
         s = s.transpose(0, 1)
 
         # 还需要让语音经过encoder
-        for layer in self.transformer_layers:
+        # for layer in self.transformer_layers:
             # kv_prefix: T, B, D
             # kv_padding: B, T
-            s = layer(s, s_encoder_padding_mask)
+            # s = layer(s, s_encoder_padding_mask)
 
-        if self.layer_norm is not None:
-            s = self.layer_norm(s)
+        # if self.layer_norm is not None:
+        #     s = self.layer_norm(s)
 
         # 2. 对文本编码
         x_encoder_padding_mask = source.eq(self.padding_idx)
@@ -477,6 +477,63 @@ class HubertTransformerEncoder(FairseqEncoder):
         return {
             "encoder_out": [x],  # T x B x C
             "encoder_padding_mask": [x_encoder_padding_mask],  # B x T
+            "encoder_embedding": [encoder_embedding],  # B x T x C
+            "encoder_states": encoder_states,  # List[T x B x C]
+            "src_tokens": [],
+            "src_lengths": [],
+        }
+
+    def forward_s_cross_x(self, src_tokens, audio, audio_lengths, return_all_hiddens=False):
+        # 1. 首先对文本进行编码
+        x_encoder_padding_mask = src_tokens.eq(self.padding_idx)
+        has_pads = src_tokens.device.type == "xla" or x_encoder_padding_mask.any()
+        x, _ = self.forward_embedding(src_tokens)
+        if has_pads:
+            x = x * (1 - x_encoder_padding_mask.unsqueeze(-1).type_as(x))
+
+        # T x B x C
+        x = x.transpose(0, 1)
+
+        # 2. 对语音编码
+        s, s_encoder_padding_mask, input_lengths = self._get_hubert_features(audio, audio_lengths)
+        if self.subsampler is not None:
+            s, input_lengths = self.subsampler(s, input_lengths)
+            s_encoder_padding_mask = lengths_to_padding_mask(input_lengths)
+            s = s.transpose(0, 1)  # T x B x C -> B x T x C
+        else:
+            s = self.dim_proj(s)
+        if self.layernorm_embedding is not None:
+            s = self.layernorm_embedding(s)
+        s = self.dropout_module(s)
+
+        # B x T x C
+        encoder_embedding = s
+        # T x B x C
+        s = s.transpose(0, 1)
+
+        encoder_states = []
+        if return_all_hiddens:
+            encoder_states.append(s)
+
+        # 对语音编码的时候参考文本
+        # for layer in self.transformer_layers[:4]:
+        #     x = layer(x, x_encoder_padding_mask, kv_prefix=None)
+        #     if return_all_hiddens:
+        #         encoder_states.append(x)
+
+        for layer in self.transformer_layers[:]:
+            # kv_prefix: T, B, D
+            # kv_padding: B, T
+            s = layer(s, s_encoder_padding_mask, kv_prefix=x, kv_padding=x_encoder_padding_mask)
+            if return_all_hiddens:
+                encoder_states.append(s)
+
+        if self.layer_norm is not None:
+            s = self.layer_norm(s)
+
+        return {
+            "encoder_out": [s],  # T x B x C
+            "encoder_padding_mask": [s_encoder_padding_mask],  # B x T
             "encoder_embedding": [encoder_embedding],  # B x T x C
             "encoder_states": encoder_states,  # List[T x B x C]
             "src_tokens": [],
