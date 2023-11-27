@@ -138,7 +138,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         selected_index = torch.bernoulli(probability_matrix).bool().to(encoder_out_origin.device)
 
         # get mix encoder_out
-        mix_encoder_out = torch.zeros((bsz, text_len, emb_dim), device=encoder_out_origin.device)
+        mix_encoder_out = torch.zeros((bsz, text_len, emb_dim), device=encoder_out_origin.device, dtype=encoder_out_origin.dtype)
         mix_encoder_out[selected_index] = encoder_out_origin[selected_index]
         mix_encoder_out[~selected_index] = x_cross_s_encoder_out[~selected_index]
         mix_encoder_out = mix_encoder_out.transpose(0, 1)
