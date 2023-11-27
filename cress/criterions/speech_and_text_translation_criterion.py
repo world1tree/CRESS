@@ -128,7 +128,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             # masked_logits = torch.log_softmax(masked_logits, dim=-1)
             masked_logits = F.log_softmax(masked_logits[:,model.vocab_padding_mask], dim=-1)
 
-        return masked_logits
+        return masked_logits.detach()
 
     def forward_ext_mt(self, model, sample, reduce):
         text_output = model(**sample["net_input"])
@@ -156,8 +156,8 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             if self.mt_finetune and self.training:
                 st_loss, st_lprobs, st_target = self.forward_st(model, sample, reduce)
                 # mt_loss = self.forward_mt(model, sample, reduce)
-                # mt_loss, x_cross_s_lprobs, mt_target = self.forward_mt(model, sample, reduce)
-                mt_loss, x_cross_s_lprobs, mt_target = self.forward_x_cross_s(model, sample, reduce)
+                mt_loss, x_cross_s_lprobs, mt_target = self.forward_mt(model, sample, reduce)
+                # mt_loss, x_cross_s_lprobs, mt_target = self.forward_x_cross_s(model, sample, reduce)
 
                 # use bert as teacher, use st and mt as student
                 student1_logits = x_cross_s_lprobs
@@ -168,10 +168,12 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 teacher_logits = self.forward_masked_lm(model, sample, reduce)
                 kl_loss_st = F.kl_div(student1_logits, teacher_logits, log_target=True, reduction="none").sum(-1)
                 kl_loss_mt = F.kl_div(student2_logits, teacher_logits, log_target=True, reduction="none").sum(-1)
+                # 这里是否需要除以2有待商榷
                 kl_loss = (kl_loss_st.sum() + kl_loss_mt.sum()) / 2
-                jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx)
-                loss = st_loss + mt_loss + jsd_loss + kl_loss
+                # 这里应该使用全部的jsd
+                # jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx)
                 st_size = mt_size = sample_size = sample["ntokens"]
+                loss = ((st_loss + mt_loss)/sample_size) + kl_loss/masked_num
             # st(dev or train only)
             else:
                 st_loss, _, _ = self.forward_st(model, sample, reduce)
