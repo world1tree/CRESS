@@ -249,7 +249,7 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
     def get_concat_input_and_label(self, concat_text_tokenizer, seq_type_indicator):
         # -100 will be ignored when calculate loss
         label = concat_text_tokenizer.new_ones(concat_text_tokenizer.size(0), dtype=torch.long) * -100
-        p = seq_type_indicator * 0.3
+        p = seq_type_indicator * 0.15
         selected = torch.bernoulli(p).bool()
 
         # Here, we simply zero out the selected tokens in the input

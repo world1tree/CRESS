@@ -184,7 +184,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 jsd_loss2 = self.compute_kl_loss(st_lprobs_selected, x_cross_s_lprobs_selected, concat_lprobs_selected)
 
                 # We need average loss per token
-                loss = 0.3 * ((concat_loss + jsd_loss2) / masked_num) + 0.7 * ((st_loss + mt_loss + jsd_loss) / sample_size)
+                loss = ((concat_loss + jsd_loss2) / masked_num) + ((st_loss + mt_loss + jsd_loss) / sample_size)
             # st(dev or train only)
             else:
                 st_size = sample_size = sample["ntokens"]
