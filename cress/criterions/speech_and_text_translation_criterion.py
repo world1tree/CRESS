@@ -54,6 +54,18 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         )
         return loss, nll_loss, lprobs, target
 
+    def compute_jsd_loss_part(self, st_lprobs, mt_lprobs, target, ignore_index, y_masked_info):
+        pad_mask = (y_masked_info | (target.eq(ignore_index)))
+        pad_mask = pad_mask.view(-1)
+        kl_loss_st = F.kl_div(mt_lprobs, st_lprobs, log_target=True, reduction="none").sum(-1)
+        kl_loss_mt = F.kl_div(st_lprobs, mt_lprobs, log_target=True, reduction="none").sum(-1)
+        kl_loss_st.masked_fill_(pad_mask, 0.0)
+        kl_loss_mt.masked_fill_(pad_mask, 0.0)
+        kl_loss_st = kl_loss_st.sum()
+        kl_loss_mt = kl_loss_mt.sum()
+        kl_loss = (kl_loss_st + kl_loss_mt) / 2.0
+        return kl_loss
+
     def compute_jsd_loss(self, st_lprobs, mt_lprobs, st_target, mt_target, ignore_index):
         kl_loss_st = F.kl_div(mt_lprobs, st_lprobs, log_target=True, reduction="none").sum(-1)
         kl_loss_mt = F.kl_div(st_lprobs, mt_lprobs, log_target=True, reduction="none").sum(-1)
@@ -161,10 +173,10 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 kl_loss_st = F.kl_div(student1_logits, teacher_logits, log_target=True, reduction="none").sum(-1)
                 kl_loss_mt = F.kl_div(student2_logits, teacher_logits, log_target=True, reduction="none").sum(-1)
                 kl_loss = (kl_loss_st.sum() + kl_loss_mt.sum()) / 2
-                jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx)
+                jsd_loss = self.compute_jsd_loss_part(st_lprobs, x_cross_s_lprobs, mt_target.view(bsz, tsz), self.padding_idx, sample["y_masked_info"])
                 st_size = mt_size = sample_size = sample["ntokens"]
-                # 不同loss设置不同权重
-                loss = ((st_loss + mt_loss + jsd_loss) / sample_size) + (kl_loss / masked_num)
+                # 由于此时jsd_loss + kl_loss计算的是总的单词数，因此无需加额外权重
+                loss = st_loss + mt_loss + jsd_loss + kl_loss
             # st(dev or train only)
             else:
                 st_loss, _, _ = self.forward_st(model, sample, reduce)
@@ -206,6 +218,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         st_sample_size = sum(log.get("st_sample_size", 0) for log in logging_outputs)
         mt_sample_size = sum(log.get("mt_sample_size", 0) for log in logging_outputs)
         ext_mt_sample_size = sum(log.get("ext_mt_sample_size", 0) for log in logging_outputs)
+        jsd_num_sum = mt_sample_size-masked_num_sum
 
         metrics.log_scalar(
             "loss", loss_sum / st_sample_size / math.log(2) if st_sample_size != 0 else 0, st_sample_size, round=3
@@ -217,7 +230,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "mt_loss", mt_loss_sum / mt_sample_size / math.log(2) if mt_sample_size != 0 else 0, mt_sample_size, round=3
         )
         metrics.log_scalar(
-            "jsd_loss", jsd_loss_sum / mt_sample_size / math.log(2) if mt_sample_size != 0 else 0, mt_sample_size, round=3
+            "jsd_loss", jsd_loss_sum / jsd_num_sum / math.log(2) if jsd_num_sum != 0 else 0, jsd_num_sum, round=3
         )
         metrics.log_scalar(
             "kl_loss", kl_loss_sum / masked_num_sum / math.log(2) if masked_num_sum != 0 else 0, masked_num_sum, round=3
