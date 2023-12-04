@@ -186,7 +186,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 # mt_loss = self.forward_mt(model, sample, reduce)
                 mt_loss, x_cross_s_lprobs, mt_target = self.forward_x_cross_s(model, sample, reduce)
                 # jsd loss between st and mt
-                jsd_loss = self.compute_jsd_loss_part(st_lprobs, x_cross_s_lprobs, mt_target.view(bsz, seq_len), self.padding_idx, selected)
+                jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx, selected)
 
                 st_lprobs_selected = st_lprobs.view(bsz, seq_len, -1)[selected]
                 x_cross_s_lprobs_selected = x_cross_s_lprobs.view(bsz, seq_len, -1)[selected]
@@ -196,7 +196,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 jsd_loss2 = self.compute_kl_loss(st_lprobs_selected, x_cross_s_lprobs_selected, concat_lprobs_selected)
 
                 # We need average loss per token
-                loss = concat_loss + jsd_loss2 + st_loss + mt_loss + jsd_loss
+                loss = ((concat_loss + jsd_loss2)/masked_num) + ((st_loss + mt_loss + jsd_loss)/sample_size)
             # st(dev or train only)
             else:
                 st_size = sample_size = sample["ntokens"]
@@ -240,7 +240,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         jsd_loss2_sum = sum(log.get("jsd_loss2", 0) for log in logging_outputs)
         concat_loss_sum = sum(log.get("concat_loss", 0) for log in logging_outputs)
         masked_num_sum = sum(log.get("masked_num", 0) for log in logging_outputs)
-        jsd_num_sum = mt_sample_size - masked_num_sum
+        # jsd_num_sum = mt_sample_size - masked_num_sum
 
         metrics.log_scalar(
             "loss", loss_sum / math.log(2), 1, round=3
@@ -252,7 +252,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "mt_loss", mt_loss_sum / mt_sample_size / math.log(2) if mt_sample_size != 0 else 0, mt_sample_size, round=3
         )
         metrics.log_scalar(
-            "jsd_loss", jsd_loss_sum / jsd_num_sum / math.log(2) if jsd_num_sum != 0 else 0, jsd_num_sum, round=3
+            "jsd_loss", jsd_loss_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
         )
         metrics.log_scalar(
             "concat_loss", concat_loss_sum / masked_num_sum / math.log(2) if masked_num_sum != 0 else 0, masked_num_sum, round=3
