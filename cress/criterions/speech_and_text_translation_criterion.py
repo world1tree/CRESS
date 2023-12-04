@@ -5,6 +5,7 @@
 
 import math
 import random
+import numpy as np
 from dataclasses import dataclass, field
 
 import torch
@@ -26,6 +27,10 @@ class SpeechAndTextTranslationCriterionConfig(LabelSmoothedCrossEntropyCriterion
         default=False,
         metadata={"help": "st + mt multi-task finetune"},
     )
+    decay_k: float = field(
+        default=5,
+        metadata={"help": "decay hyper-paramter k"},
+    )
 
 @register_criterion(
     "speech_and_text_translation", dataclass=SpeechAndTextTranslationCriterionConfig
@@ -39,9 +44,15 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         ignore_prefix_size=0,
         report_accuracy=False,
         mt_finetune=False,
+        decay_k=5,
     ):
         super().__init__(task, sentence_avg, label_smoothing, ignore_prefix_size, report_accuracy)
         self.mt_finetune = mt_finetune
+        self.decay_k = decay_k
+
+    def decay_prob(self, epoch):
+        k = self.decay_k
+        return (k+1) / (k + np.exp((epoch-1) / k))
 
     def compute_loss_with_lprobs(self, model, net_output, sample, reduce=True):
         lprobs, target = self.get_lprobs_and_target(model, net_output, sample)
@@ -179,14 +190,19 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         if mode == "st":
             # st + mt
             if self.mt_finetune and self.training:
+                # We need average loss per token
+                weight = self.decay_prob(model.epoch)
+
                 st_size = mt_size = sample_size = sample["ntokens"]
                 concat_loss, concat_lprobs_selected, selected = self.forward_concat(model, sample, reduce)
+                # 1.
+                concat_loss = weight * concat_loss
                 masked_num = selected.sum().item()
                 st_loss, st_lprobs, st_target = self.forward_st(model, sample, reduce)
                 # mt_loss = self.forward_mt(model, sample, reduce)
                 mt_loss, x_cross_s_lprobs, mt_target = self.forward_x_cross_s(model, sample, reduce)
                 # jsd loss between st and mt
-                jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx, selected)
+                jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx)
 
                 st_lprobs_selected = st_lprobs.view(bsz, seq_len, -1)[selected]
                 x_cross_s_lprobs_selected = x_cross_s_lprobs.view(bsz, seq_len, -1)[selected]
@@ -194,8 +210,9 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 # jsd1 = self.compute_jsd_loss_without_pad(st_lprobs_selected, concat_lprobs_selected)
                 # jsd2 = self.compute_jsd_loss_without_pad(x_cross_s_lprobs_selected, concat_lprobs_selected)
                 jsd_loss2 = self.compute_kl_loss(st_lprobs_selected, x_cross_s_lprobs_selected, concat_lprobs_selected)
+                # 2.
+                jsd_loss2 = weight * jsd_loss2
 
-                # We need average loss per token
                 loss = ((concat_loss + jsd_loss2)/masked_num) + ((st_loss + mt_loss + jsd_loss)/sample_size)
             # st(dev or train only)
             else:
