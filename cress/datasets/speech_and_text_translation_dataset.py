@@ -104,6 +104,7 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
         self.tgt_lens = self.get_tgt_lens_and_check_oov()
         self.append_eos = append_eos
         self.pad_id = self.tgt_dict.pad()
+        self.bos_id = self.tgt_dict.bos()
 
         logger.info(self.__repr__())
 
@@ -249,15 +250,22 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
     def get_concat_input_and_label(self, concat_text_tokenizer, seq_type_indicator):
         # -100 will be ignored when calculate loss
         label = concat_text_tokenizer.new_ones(concat_text_tokenizer.size(0), dtype=torch.long) * -100
-        p = seq_type_indicator * 0.15
-        selected = torch.bernoulli(p).bool()
-
-        # Here, we simply zero out the selected tokens in the input
+        one_num = seq_type_indicator.eq(1).sum().item()
+        zero_num = seq_type_indicator.eq(0).sum().item()
+        # 至少mask一个token
+        masked_num = np.random.randint(1, one_num+1)
+        masked_id = np.random.choice(np.arange(one_num) + zero_num, masked_num, replace=False)
+        masked_id = torch.tensor(masked_id, dtype=seq_type_indicator.dtype, device=seq_type_indicator.device)
+        # from small to large
+        masked_id = masked_id.sort()[0]
+        selected = seq_type_indicator.new_zeros(seq_type_indicator.size(0), dtype=torch.bool)
+        selected[masked_id] = True
 
         # create label
         label[selected] = concat_text_tokenizer[selected]
         # create input
-        concat_text_tokenizer[selected] = self.pad_id
+        # concat_text_tokenizer[selected] = self.pad_id
+        concat_text_tokenizer[selected] = self.bos_id # try bos id
 
         # here we need extra info so that we can know which token is masked in origin y
         x_size = seq_type_indicator.eq(0).sum()
