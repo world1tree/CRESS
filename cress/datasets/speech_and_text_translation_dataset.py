@@ -234,10 +234,13 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
 
         # concat tokenized x and y
         text_tokenized_concat, seq_type_indicator = self.get_tokenized_text_concat(index, source, target, max_length=512)
-        concat_text_tokenizer, label, y_mask = self.get_concat_input_and_label(text_tokenized_concat, seq_type_indicator)
+        # concat_text_tokenizer, label, y_mask = self.get_concat_input_and_label(text_tokenized_concat, seq_type_indicator)
 
+        concat_text_tokenizer = text_tokenized_concat
+        # 此时没有一个token被mask
+        label = concat_text_tokenizer.new_ones(concat_text_tokenizer.size(0), dtype=torch.long) * -100
         y_masked_info = torch.zeros_like(target).bool()
-        y_masked_info[:y_mask.size(0)] = y_mask
+        # y_masked_info[:y_mask.size(0)] = y_mask
 
         speaker_id = None
         if self.speaker_to_id is not None:

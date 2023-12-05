@@ -103,8 +103,13 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "prev_output_tokens": sample["net_input"]["prev_output_tokens"],
         }
         audio_output = model(**audio_input)
+
+        with torch.no_grad():
+            all_tokens, st_correct_tokens, st_correct_matrix, st_probs = self.collect_result(model, audio_output,
+                                                                                             sample)
+
         loss, _, lprobs, target = self.compute_loss_with_lprobs(model, audio_output, sample, reduce=reduce)
-        return loss, lprobs, target
+        return loss, lprobs, target, all_tokens, st_correct_tokens, st_correct_matrix, st_probs
     
     def forward_mt(self, model, sample, reduce):
         text_input = {
@@ -128,8 +133,12 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         decoder_out = model.decoder(
             prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
         )
+
+        with torch.no_grad():
+            all_tokens, mt_correct_tokens, mt_correct_matrix, mt_probs = self.collect_result(model, decoder_out, sample)
+
         loss, _, lprobs, target = self.compute_loss_with_lprobs(model, decoder_out, sample, reduce=reduce)
-        return loss, lprobs, target
+        return loss, lprobs, target, all_tokens, mt_correct_tokens, mt_correct_matrix, mt_probs
 
     def forward_ext_mt(self, model, sample, reduce):
         text_output = model(**sample["net_input"])
@@ -161,6 +170,17 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
 
         return loss, lprobs_selected, selected
 
+    def collect_result(self, model, decoder_output, sample):
+        probs = model.get_normalized_probs(decoder_output, log_probs=False)
+        lprobs = model.get_normalized_probs(decoder_output, log_probs=True)
+        target = model.get_targets(sample, decoder_output)
+        pred = torch.argmax(lprobs, dim=-1)
+        pad_mask = target.eq(self.padding_idx)
+        batch_tokens = int(torch.sum(~pad_mask).item())
+        correct_matrix = pred.eq(target) & (~pad_mask)
+        correct_tokens = int(torch.sum(correct_matrix).item())
+        return batch_tokens, correct_tokens, correct_matrix.detach(), probs.detach()
+
     def forward(self, model, sample, reduce=True):
         """Compute the loss for the given sample.
         Returns a tuple with three elements:
@@ -183,13 +203,46 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 # We need average loss per token
 
                 st_size = mt_size = sample_size = sample["ntokens"]
-                concat_loss, concat_lprobs_selected, selected = self.forward_concat(model, sample, reduce)
-                masked_num = selected.sum().item()
-                st_loss, st_lprobs, st_target = self.forward_st(model, sample, reduce)
+                st_loss, st_lprobs, st_target, st_all_tokens, st_tokens_correct, st_correct_matrix, st_probs = self.forward_st(model, sample, reduce)
                 # mt_loss = self.forward_mt(model, sample, reduce)
-                mt_loss, x_cross_s_lprobs, mt_target = self.forward_x_cross_s(model, sample, reduce)
+                mt_loss, x_cross_s_lprobs, mt_target, mt_all_tokens, mt_tokens_correct, mt_correct_matrix, mt_probs = self.forward_x_cross_s(model, sample, reduce)
+
+                assert st_all_tokens == mt_all_tokens == sample["ntokens"]
                 # jsd loss between st and mt
                 jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx)
+
+                # st和mt都不能预测正确的单词(可以减少mask的数量), 需要排除padding
+                target_pading_mask = sample["target"].eq(self.padding_idx)
+                st_mt_incorrect_matrix = (~st_correct_matrix) & (~mt_correct_matrix) & (~target_pading_mask)
+
+                # -----------------------------------------------------
+                # -----------------------------------------------------
+                # -----------------------------------------------------
+                # We need to modify concat_source and y_masked_info
+                concat_source = sample["concat_input"]["source"]
+                # print(concat_source)
+                concat_lengths = sample["concat_input"]["source_lengths"]
+                source_lengths = sample["net_input"]["source_lengths"]
+                target_lengths = sample["target_lengths"]
+                y_masked_info = sample["concat_input"]["y_masked_info"]
+                assert st_mt_incorrect_matrix.shape == y_masked_info.shape
+                # y_masked_info是target端的
+                y_masked_info = st_mt_incorrect_matrix
+                for i in range(bsz):
+                    assert concat_lengths[i] - source_lengths[i] == target_lengths[i]
+                    # st_mt_incorrect_matrix[i][i+1:] = False
+                    concat_source[i, source_lengths[i]:concat_lengths[i]][st_mt_incorrect_matrix[i, :target_lengths[i]]] = 0 # 使用bos作为mask字符
+                concat_source = concat_source.detach()
+                y_masked_info = y_masked_info.detach()
+                sample["concat_input"]["source"] = concat_source
+                sample["concat_input"]["y_masked_info"] = y_masked_info
+                # print(concat_source)
+                # print(sample["net_input"]["source"])
+                # -----------------------------------------------------
+                # -----------------------------------------------------
+                # -----------------------------------------------------
+                concat_loss, concat_lprobs_selected, selected = self.forward_concat(model, sample, reduce)
+                masked_num = selected.sum().item()
 
                 st_lprobs_selected = st_lprobs.view(bsz, seq_len, -1)[selected]
                 x_cross_s_lprobs_selected = x_cross_s_lprobs.view(bsz, seq_len, -1)[selected]
@@ -261,6 +314,9 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         )
         metrics.log_scalar(
             "jsd_loss2", jsd_loss2_sum / masked_num_sum / math.log(2) if masked_num_sum != 0 else 0, masked_num_sum, round=3
+        )
+        metrics.log_scalar(
+            "hard_word_percentage", masked_num_sum / sample_size if sample_size != 0 else 0, sample_size, round=3
         )
         metrics.log_scalar(
             "ext_mt_loss", ext_mt_loss_sum / ext_mt_sample_size / math.log(2) if ext_mt_sample_size != 0 else 0, ext_mt_sample_size, round=3
