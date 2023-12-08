@@ -104,6 +104,7 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
         self.tgt_lens = self.get_tgt_lens_and_check_oov()
         self.append_eos = append_eos
         self.pad_id = self.tgt_dict.pad()
+        self.bos_id = self.tgt_dict.bos()
 
         logger.info(self.__repr__())
 
@@ -257,7 +258,7 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
         # create label
         label[selected] = concat_text_tokenizer[selected]
         # create input
-        concat_text_tokenizer[selected] = self.pad_id
+        concat_text_tokenizer[selected] = self.bos_id
 
         # here we need extra info so that we can know which token is masked in origin y
         x_size = seq_type_indicator.eq(0).sum()
