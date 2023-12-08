@@ -27,10 +27,6 @@ class SpeechAndTextTranslationCriterionConfig(LabelSmoothedCrossEntropyCriterion
         default=False,
         metadata={"help": "st + mt multi-task finetune"},
     )
-    decay_k: float = field(
-        default=5,
-        metadata={"help": "decay hyper-paramter k"},
-    )
 
 @register_criterion(
     "speech_and_text_translation", dataclass=SpeechAndTextTranslationCriterionConfig
@@ -44,15 +40,9 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         ignore_prefix_size=0,
         report_accuracy=False,
         mt_finetune=False,
-        decay_k=5,
     ):
         super().__init__(task, sentence_avg, label_smoothing, ignore_prefix_size, report_accuracy)
         self.mt_finetune = mt_finetune
-        self.decay_k = decay_k
-
-    def decay_prob(self, epoch):
-        k = self.decay_k
-        return (k+1) / (k + np.exp((epoch-1) / k))
 
     def compute_loss_with_lprobs(self, model, net_output, sample, reduce=True):
         lprobs, target = self.get_lprobs_and_target(model, net_output, sample)
@@ -98,10 +88,12 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         return kl_loss
 
     def compute_kl_loss(self, st_lprobs, mt_lprobs, teacher_lprobs):
-        kl_loss_st = F.kl_div(st_lprobs, teacher_lprobs.detach(), log_target=True, reduction="none").sum(-1)
-        kl_loss_mt = F.kl_div(mt_lprobs, teacher_lprobs.detach(), log_target=True, reduction="none").sum(-1)
-        kl_loss_st = kl_loss_st.sum()
-        kl_loss_mt = kl_loss_mt.sum()
+        kl_loss_st1 = F.kl_div(st_lprobs, teacher_lprobs, log_target=True, reduction="none").sum(-1)
+        kl_loss_st2 = F.kl_div(teacher_lprobs, st_lprobs, log_target=True, reduction="none").sum(-1)
+        kl_loss_mt1 = F.kl_div(mt_lprobs, teacher_lprobs, log_target=True, reduction="none").sum(-1)
+        kl_loss_mt2 = F.kl_div(teacher_lprobs, mt_lprobs, log_target=True, reduction="none").sum(-1)
+        kl_loss_st = kl_loss_st1.sum() + kl_loss_st2.sum()
+        kl_loss_mt = kl_loss_mt1.sum() + kl_loss_mt2.sum()
         kl_loss = (kl_loss_st + kl_loss_mt) / 2.0
         return kl_loss
 
@@ -151,15 +143,22 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "src_tokens": sample["concat_input"]["source"],
             "src_lengths": sample["concat_input"]["source_lengths"],
             "mode": "mt",
-            "prev_output_tokens": sample["net_input"]["prev_output_tokens"],
+            # "prev_output_tokens": sample["net_input"]["prev_output_tokens"],
         }
-        text_output = model(**text_input)
+        encoder_out = model.encoder(**text_input)
+        # bz, seq_len, dim
+        concat_encoder = encoder_out["encoder_out"][0].transpose(0, 1)
+        label = sample["concat_input"]["label"]
+
+        logits_selected = concat_encoder[label.ne(-100)]
+        # we use decoder's linear layer
+        logits_selected = model.decoder.output_layer(logits_selected)
+
         # 一定要用float32, 否则会溢出
-        lprobs = F.log_softmax(text_output[0], dim=-1, dtype=torch.float32)
+        lprobs_selected = F.log_softmax(logits_selected, dim=-1, dtype=torch.float32)
         target = sample["target"]
         selected = sample["concat_input"]["y_masked_info"]
         # only calculate loss for selected tokens
-        lprobs_selected = lprobs[selected]
         target_selected = target[selected]
         loss, nll_loss = label_smoothed_nll_loss(
             lprobs_selected,
@@ -190,13 +189,9 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         if mode == "st":
             # st + mt
             if self.mt_finetune and self.training:
-                # We need average loss per token
-                weight = self.decay_prob(model.epoch)
 
                 st_size = mt_size = sample_size = sample["ntokens"]
                 concat_loss, concat_lprobs_selected, selected = self.forward_concat(model, sample, reduce)
-                # 1.
-                concat_loss = weight * concat_loss
                 masked_num = selected.sum().item()
                 st_loss, st_lprobs, st_target = self.forward_st(model, sample, reduce)
                 # mt_loss = self.forward_mt(model, sample, reduce)
@@ -210,8 +205,6 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 # jsd1 = self.compute_jsd_loss_without_pad(st_lprobs_selected, concat_lprobs_selected)
                 # jsd2 = self.compute_jsd_loss_without_pad(x_cross_s_lprobs_selected, concat_lprobs_selected)
                 jsd_loss2 = self.compute_kl_loss(st_lprobs_selected, x_cross_s_lprobs_selected, concat_lprobs_selected)
-                # 2.
-                jsd_loss2 = weight * jsd_loss2
 
                 loss = ((concat_loss + jsd_loss2)/masked_num) + ((st_loss + mt_loss + jsd_loss)/sample_size)
             # st(dev or train only)

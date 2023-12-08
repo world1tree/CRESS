@@ -381,11 +381,11 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
         )
         type_indicator = type_indicator.index_select(0, order)
 
-        # label = self.collate_tokens(
-        #     [x.label for x in samples],
-        #     -100,  # -100 will be ignored when calculate loss
-        # )
-        # label = label.index_select(0, order)
+        label = self.collate_tokens(
+            [x.label for x in samples],
+            -100,  # -100 will be ignored when calculate loss
+        )
+        label = label.index_select(0, order)
 
         concat_lengths = torch.tensor(
             [x.concat.size(0) for x in samples], dtype=torch.long
@@ -404,7 +404,7 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
             "source": concat,
             "source_lengths": concat_lengths,
             "token_type_ids": type_indicator,
-            # "label": label,
+            "label": label,
             "y_masked_info": y_masked_info,
             # "attention_mask": concat_padding_mask,
         }
