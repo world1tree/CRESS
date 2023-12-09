@@ -256,8 +256,8 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
 
         # create label
         label[selected] = concat_text_tokenizer[selected]
-        # create input
-        concat_text_tokenizer[selected] = self.pad_id
+        # create input, Here, we don't need mask it
+        # concat_text_tokenizer[selected] = self.pad_id
 
         # here we need extra info so that we can know which token is masked in origin y
         x_size = seq_type_indicator.eq(0).sum()
@@ -405,7 +405,7 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
             "source_lengths": concat_lengths,
             "token_type_ids": type_indicator,
             # "label": label,
-            "y_masked_info": y_masked_info,
+            # "y_masked_info": y_masked_info,
             # "attention_mask": concat_padding_mask,
         }
 
