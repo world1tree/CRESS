@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!tusr/bin/env python3
 
 import logging
 import math
@@ -436,10 +436,10 @@ class HubertTransformerEncoder(FairseqEncoder):
         s = s.transpose(0, 1)
 
         # 还需要让语音经过encoder
-        for layer in self.transformer_layers:
+        # for layer in self.transformer_layers:
             # kv_prefix: T, B, D
             # kv_padding: B, T
-            s = layer(s, s_encoder_padding_mask)
+            # s = layer(s, s_encoder_padding_mask)
 
         if self.layer_norm is not None:
             s = self.layer_norm(s)
@@ -468,6 +468,48 @@ class HubertTransformerEncoder(FairseqEncoder):
             # kv_prefix: T, B, D
             # kv_padding: B, T
             x = layer(x, x_encoder_padding_mask, kv_prefix=s, kv_padding=s_encoder_padding_mask)
+            if return_all_hiddens:
+                encoder_states.append(x)
+
+        if self.layer_norm is not None:
+            x = self.layer_norm(x)
+
+        return {
+            "encoder_out": [x],  # T x B x C
+            "encoder_padding_mask": [x_encoder_padding_mask],  # B x T
+            "encoder_embedding": [encoder_embedding],  # B x T x C
+            "encoder_states": encoder_states,  # List[T x B x C]
+            "src_tokens": [],
+            "src_lengths": [],
+        }
+
+    def forward_x_cross_y(self, source, target, return_all_hiddens=False):
+        # 1. 首先对y进行编码
+        y_encoder_padding_mask = target.eq(self.padding_idx)
+        has_pads = source.device.type == "xla" or y_encoder_padding_mask.any()
+        y, _ = self.forward_embedding(target)
+        if has_pads:
+            y = y * (1 - y_encoder_padding_mask.unsqueeze(-1).type_as(y))
+        y = y.transpose(0, 1)
+
+        # 2. 对文本编码
+        x_encoder_padding_mask = source.eq(self.padding_idx)
+        has_pads = source.device.type == "xla" or x_encoder_padding_mask.any()
+        x, _ = self.forward_embedding(source)
+        if has_pads:
+            x = x * (1 - x_encoder_padding_mask.unsqueeze(-1).type_as(x))
+
+        encoder_embedding = x
+        x = x.transpose(0, 1)  # B x T x C -> T x B x C
+
+        encoder_states = []
+        if return_all_hiddens:
+            encoder_states.append(x)
+
+        for layer in self.transformer_layers[:]:
+            # kv_prefix: T, B, D
+            # kv_padding: B, T
+            x = layer(x, x_encoder_padding_mask, kv_prefix=y, kv_padding=y_encoder_padding_mask)
             if return_all_hiddens:
                 encoder_states.append(x)
 
