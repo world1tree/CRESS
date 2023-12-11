@@ -164,6 +164,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         x_cross_y_loss = torch.Tensor([0])
         contrastive_loss = torch.Tensor([0])
         jsd_loss = torch.Tensor([0])
+        jsd_loss2 = torch.Tensor([0])
         st_size, mt_size, ext_mt_size = 0, 0, 0
 
         mode = sample["net_input"]["mode"]
@@ -174,10 +175,11 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 # mt_loss = self.forward_mt(model, sample, reduce)
                 x_cross_s_loss, x_cross_s_lprobs, mt_target, x_cross_s_state = self.forward_x_cross_s(model, sample, reduce)
                 x_cross_y_loss, x_cross_y_lprobs, _, x_cross_y_state = self.forward_x_cross_y(model, sample, reduce)
-                contrastive_loss = self.compute_contrastive_loss(x_cross_s_state, x_cross_y_state)
+                # contrastive_loss = self.compute_contrastive_loss(x_cross_s_state, x_cross_y_state)
 
                 jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx)
-                loss = st_loss + x_cross_s_loss + x_cross_y_loss + contrastive_loss + jsd_loss
+                jsd_loss2 = self.compute_jsd_loss(st_lprobs, x_cross_y_lprobs, st_target, mt_target, self.padding_idx)
+                loss = st_loss + x_cross_s_loss + x_cross_y_loss + jsd_loss + jsd_loss2
                 st_size = mt_size = sample_size = sample["ntokens"]
             # st(dev or train only)
             else:
@@ -197,6 +199,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "contrastive_loss": contrastive_loss.data,
             "mt_sample_size": mt_size,
             "jsd_loss": jsd_loss.data,
+            "jsd_loss2": jsd_loss2.data,
             "ext_mt_loss": ext_mt_loss.data,
             "ext_mt_sample_size": ext_mt_size,
             "ntokens": sample["ntokens"],
@@ -221,6 +224,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         nsentences = sum(log.get("nsentences", 0) for log in logging_outputs)
         ext_mt_sample_size = sum(log.get("ext_mt_sample_size", 0) for log in logging_outputs)
         jsd_loss_sum = sum(log.get("jsd_loss", 0) for log in logging_outputs)
+        jsd_loss2_sum = sum(log.get("jsd_loss2", 0) for log in logging_outputs)
 
         metrics.log_scalar(
             "loss", loss_sum / sample_size / math.log(2), sample_size, round=3
@@ -239,6 +243,9 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         )
         metrics.log_scalar(
             "jsd_loss", jsd_loss_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
+        )
+        metrics.log_scalar(
+            "jsd_loss2", jsd_loss2_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
         )
         metrics.log_scalar(
             "ext_mt_loss", ext_mt_loss_sum / ext_mt_sample_size / math.log(2) if ext_mt_sample_size != 0 else 0, ext_mt_sample_size, round=3
