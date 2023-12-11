@@ -69,10 +69,12 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
         )
         return S2THubInterface(x["args"], x["task"], x["models"][0])
 
-    def __init__(self, encoder, decoder):
+    def __init__(self, encoder, decoder, cmlm_model=None):
         super().__init__(encoder, decoder)
         self.epoch = 1
-    
+        self.cmlm_model = cmlm_model
+
+
     def set_epoch(self, epoch):
         self.epoch = epoch
 
@@ -206,6 +208,12 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
             help="model to take mt encoder/decoder weight from (for initialization)",
         )
 
+        parser.add_argument(
+            "--load-cmlm",
+            type=str,
+            help="load cmlm",
+        )
+
     @classmethod
     def build_encoder(cls, args, task=None, embed_tokens=None):
         return HubertTransformerEncoder(args, task.target_dictionary, embed_tokens)
@@ -250,7 +258,40 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
             encoder.load_state_dict(mt_encoder_state_dict, strict=False)
             decoder.load_state_dict(mt_decoder_state_dict, strict=False)
 
-        return cls(encoder, decoder)
+        # cls.cmlm_pretrained_path = cmlm_pretrained_path
+        cmlm_pretrained_path = getattr(args, "load_cmlm", None)
+        if cmlm_pretrained_path is not None and getattr(cls, "cmlm_model", None) is None:
+            state_dict = checkpoint_utils.load_checkpoint_to_cpu(cmlm_pretrained_path)["model"]
+
+            # 注意embedding也是独立的, 否则把梯度设置为False会报错
+            decoder_embed_tokens = build_embedding(
+                task.target_dictionary, args.decoder_embed_dim
+            )
+            encoder_embed_tokens = decoder_embed_tokens
+            cmlm_encoder = cls.build_encoder(args, task, encoder_embed_tokens)
+            cmlm_decoder = cls.build_decoder(args, task, decoder_embed_tokens)
+
+            mt_encoder_state_dict = OrderedDict()
+            mt_decoder_state_dict = OrderedDict()
+            for key in state_dict.keys():
+                if key.startswith("encoder"):
+                    subkey = key[len("encoder") + 1 :]
+                    mt_encoder_state_dict[subkey] = state_dict[key]
+                elif key.startswith("decoder"):
+                    subkey = key[len("decoder") + 1 :]
+                    mt_decoder_state_dict[subkey] = state_dict[key]
+                else:
+                    raise RuntimeError("not encoder or decoder.")
+            cmlm_encoder.load_state_dict(mt_encoder_state_dict, strict=True)
+            cmlm_decoder.load_state_dict(mt_decoder_state_dict, strict=True)
+            # 不知道为什么，只要用cls调用cmlm_encoder/cmlm_decoder, optimizer就会报错
+            for param in cmlm_encoder.parameters():
+                param.requires_grad = False
+            for param in cmlm_decoder.parameters():
+                param.requires_grad = False
+            cmlm_model = (cmlm_encoder, cmlm_decoder)
+
+        return cls(encoder, decoder, cmlm_model)
 
     def get_normalized_probs(
         self,
