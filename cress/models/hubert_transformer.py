@@ -435,17 +435,15 @@ class HubertTransformerEncoder(FairseqEncoder):
         # T x B x C
         s = s.transpose(0, 1)
 
-        # 还需要让语音经过encoder
-        for layer in self.transformer_layers:
-            # kv_prefix: T, B, D
-            # kv_padding: B, T
-            s = layer(s, s_encoder_padding_mask)
-
-        if self.layer_norm is not None:
-            s = self.layer_norm(s)
-
         # 2. 对文本编码
+        bsz, seq_len = source.shape
+        # mask 15%的x
+        probability_matrix = torch.full((bsz, seq_len), 0.15, device=source.device, dtype=s.dtype)
+        x_mask = torch.bernoulli(probability_matrix).bool().to(source.device)
         x_encoder_padding_mask = source.eq(self.padding_idx)
+        x_mask = x_mask & (~x_encoder_padding_mask)
+        source.masked_fill_(x_mask, self.padding_idx)
+
         has_pads = source.device.type == "xla" or x_encoder_padding_mask.any()
         x, _ = self.forward_embedding(source)
         if has_pads:
