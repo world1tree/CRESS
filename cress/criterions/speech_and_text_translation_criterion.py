@@ -113,6 +113,8 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "mode": "mt",
         }
         prev_output_tokens = masked_target
+        model.cmlm_model[0] = model.cmlm_model[0].to(y_mask.device)
+        model.cmlm_model[1] = model.cmlm_model[1].to(y_mask.device)
         with torch.no_grad():
             encoder_out = model.cmlm_model[0](**text_input)
             decoder_out = model.cmlm_model[1](prev_output_tokens=prev_output_tokens, encoder_out=encoder_out)

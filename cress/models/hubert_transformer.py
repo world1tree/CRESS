@@ -289,7 +289,7 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
                 param.requires_grad = False
             for param in cmlm_decoder.parameters():
                 param.requires_grad = False
-            cmlm_model = (cmlm_encoder, cmlm_decoder)
+            cmlm_model = [cmlm_encoder, cmlm_decoder]
 
         return cls(encoder, decoder, cmlm_model)
 
