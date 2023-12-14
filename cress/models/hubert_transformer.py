@@ -69,8 +69,9 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
         )
         return S2THubInterface(x["args"], x["task"], x["models"][0])
 
-    def __init__(self, encoder, decoder):
+    def __init__(self, encoder, decoder, decoder_cmlm):
         super().__init__(encoder, decoder)
+        self.decoder_cmlm = decoder_cmlm
         self.epoch = 1
     
     def set_epoch(self, epoch):
@@ -232,6 +233,7 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
         encoder_embed_tokens = decoder_embed_tokens
         encoder = cls.build_encoder(args, task, encoder_embed_tokens)
         decoder = cls.build_decoder(args, task, decoder_embed_tokens)
+        decoder_cmlm = cls.build_decoder(args, task, decoder_embed_tokens)
         # load pretrained mt models
         mt_pretrained_path = getattr(args, "load_pretrained_mt_encoder_decoder_from", None)
         if mt_pretrained_path is not None and Path(mt_pretrained_path).exists():
@@ -249,8 +251,9 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
                     mt_decoder_state_dict[subkey] = state_dict[key]
             encoder.load_state_dict(mt_encoder_state_dict, strict=False)
             decoder.load_state_dict(mt_decoder_state_dict, strict=False)
+            decoder_cmlm.load_state_dict(mt_decoder_state_dict, strict=False)
 
-        return cls(encoder, decoder)
+        return cls(encoder, decoder, decoder_cmlm)
 
     def get_normalized_probs(
         self,
@@ -271,6 +274,18 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
         """
         encoder_out = self.encoder(src_tokens=src_tokens, src_lengths=src_lengths, mode=mode)
         decoder_out = self.decoder(
+            prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
+        )
+        return decoder_out
+
+    def forward_cmlm(self, src_tokens, src_lengths, mode, prev_output_tokens):
+        """
+        The forward method inherited from the base class has a **kwargs
+        argument in its input, which is not supported in torchscript. This
+        method overwrites the forward method definition without **kwargs.
+        """
+        encoder_out = self.encoder(src_tokens=src_tokens, src_lengths=src_lengths, mode=mode)
+        decoder_out = self.decoder_cmlm(
             prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
         )
         return decoder_out

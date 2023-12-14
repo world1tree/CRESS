@@ -92,10 +92,11 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         # We randomly mask target with 15% probability
         masked_target = sample["target"].clone()
         bsz, seq_len = masked_target.size()
+        # 暂定是0.15的概率去mask
         probability_matrix = torch.full((bsz, seq_len), 0.15, device=masked_target.device, dtype=dtype)
         y_mask = torch.bernoulli(probability_matrix).bool().to(masked_target.device)
         y_encoder_padding_mask = masked_target.eq(self.padding_idx)
-        y_mask = y_mask & (~y_encoder_padding_mask)
+        y_mask = y_mask & (~y_encoder_padding_mask) & (~masked_target.eq(2))
         # bos = 0 as <mask>
         masked_target.masked_fill_(y_mask, 0)
         masked_num = y_mask.sum().item()
@@ -106,7 +107,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "mode": "mt",
             "prev_output_tokens": masked_target,
         }
-        text_output = model(**text_input)
+        text_output = model.forward_cmlm(**text_input)
 
         lprobs = model.get_normalized_probs(text_output, log_probs=True)
         lprobs = lprobs[y_mask]
@@ -163,6 +164,14 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 # cmlm_loss的权重可以调整
                 cmlm_loss, masked_num = self.forward_cmlm(model, sample, x_cross_s_lprobs.dtype)
                 jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx)
+
+                # set weight
+                weight = 0.7
+                st_loss = weight * st_loss
+                mt_loss = weight * mt_loss
+                jsd_loss = weight * jsd_loss
+                cmlm_loss = (1-weight) * cmlm_loss
+
                 loss = st_loss + mt_loss + jsd_loss + cmlm_loss
                 st_size = mt_size = sample_size = sample["ntokens"]
             # st(dev or train only)
