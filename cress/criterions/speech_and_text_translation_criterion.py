@@ -95,7 +95,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         probability_matrix = torch.full((bsz, seq_len), 0.15, device=masked_target.device, dtype=dtype)
         y_mask = torch.bernoulli(probability_matrix).bool().to(masked_target.device)
         y_encoder_padding_mask = masked_target.eq(self.padding_idx)
-        y_mask = y_mask & (~y_encoder_padding_mask)
+        y_mask = y_mask & (~y_encoder_padding_mask) & (~masked_target.eq(2))
         # bos = 0 as <mask>
         masked_target.masked_fill_(y_mask, 0)
         masked_num = y_mask.sum().item()
@@ -106,7 +106,8 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "mode": "mt",
             "prev_output_tokens": masked_target,
         }
-        text_output = model(**text_input)
+        # self-attention no mask
+        text_output = model.forward_cmlm(**text_input)
 
         lprobs = model.get_normalized_probs(text_output, log_probs=True)
         lprobs = lprobs[y_mask]

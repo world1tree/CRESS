@@ -275,6 +275,18 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
         )
         return decoder_out
 
+    def forward_cmlm(self, src_tokens, src_lengths, mode, prev_output_tokens, full_context_alignment=True):
+        """
+        The forward method inherited from the base class has a **kwargs
+        argument in its input, which is not supported in torchscript. This
+        method overwrites the forward method definition without **kwargs.
+        """
+        encoder_out = self.encoder(src_tokens=src_tokens, src_lengths=src_lengths, mode=mode)
+        decoder_out = self.decoder(
+            prev_output_tokens=prev_output_tokens, encoder_out=encoder_out, full_context_alignment=full_context_alignment
+        )
+        return decoder_out
+
 
 class HubertTransformerEncoder(FairseqEncoder):
     """Speech-to-text Transformer encoder that consists of input subsampler and
