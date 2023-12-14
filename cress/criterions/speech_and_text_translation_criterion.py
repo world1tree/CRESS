@@ -117,7 +117,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         model.cmlm_model[1] = model.cmlm_model[1].to(y_mask.device)
         with torch.no_grad():
             encoder_out = model.cmlm_model[0](**text_input)
-            decoder_out = model.cmlm_model[1](prev_output_tokens=prev_output_tokens, encoder_out=encoder_out)
+            decoder_out = model.cmlm_model[1](prev_output_tokens=prev_output_tokens, encoder_out=encoder_out, full_context_alignment=True)
             lprobs = model.get_normalized_probs(decoder_out, log_probs=True)
             lprobs = lprobs[y_mask]
 
