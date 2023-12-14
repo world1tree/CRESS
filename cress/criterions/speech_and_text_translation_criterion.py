@@ -177,6 +177,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             # st(dev or train only)
             else:
                 st_loss, _, _ = self.forward_st(model, sample, reduce)
+                cmlm_loss, masked_num = self.forward_cmlm(model, sample, st_loss.dtype)
                 loss = st_loss
                 st_size = sample_size = sample["ntokens"]
         elif mode == "ext_mt":
