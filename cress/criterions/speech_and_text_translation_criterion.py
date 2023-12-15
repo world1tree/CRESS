@@ -74,7 +74,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         kl_loss = (kl_loss_st + kl_loss_mt) / 2.0
         return kl_loss
 
-    def forward_st(self, model, sample, reduce):
+    def forward_st(self, model, sample, y_mask, reduce):
         audio_input = {
             "src_tokens": sample["net_input"]["audio"],
             "src_lengths": sample["net_input"]["audio_lengths"],
@@ -82,8 +82,42 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "prev_output_tokens": sample["net_input"]["prev_output_tokens"],
         }
         audio_output = model(**audio_input)
-        loss, _, lprobs, target = self.compute_loss_with_lprobs(model, audio_output, sample, reduce=reduce)
-        return loss, lprobs, target
+        lprobs = model.get_normalized_probs(audio_output, log_probs=True)
+        target = model.get_targets(sample, audio_output)
+
+        if y_mask is not None:
+            padding_mask = sample["target"].eq(self.padding_idx)
+            y_nomask = (~y_mask) & (~padding_mask)
+            loss_masked, _ = label_smoothed_nll_loss(
+                lprobs[y_mask],
+                target[y_mask],
+                self.eps,
+                ignore_index=self.padding_idx,
+                reduce=reduce,
+            )
+            loss_nomasked, _ = label_smoothed_nll_loss(
+                lprobs[y_nomask],
+                target[y_nomask],
+                self.eps,
+                ignore_index=self.padding_idx,
+                reduce=reduce,
+            )
+            dist_dict = {
+                "lprobs_mask": lprobs[y_mask],
+                "lprobs_nomask": lprobs[y_nomask],
+                "target_mask": target[y_mask],
+                "target_nomask": target[y_nomask],
+            }
+            return loss_masked, loss_nomasked, dist_dict
+        else:
+            loss, _ = label_smoothed_nll_loss(
+                lprobs,
+                target,
+                self.eps,
+                ignore_index=self.padding_idx,
+                reduce=reduce,
+            )
+            return loss
     
     def forward_mt(self, model, sample, reduce):
         text_input = {
@@ -96,14 +130,15 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         loss, _ = self.compute_loss(model, text_output, sample, reduce=reduce)
         return loss
 
-    def forward_cmlm(self, model, sample, dtype):
+    def forward_cmlm(self, model, sample):
         # We randomly mask target with 15% probability
         masked_target = sample["target"].clone()
         bsz, seq_len = masked_target.size()
         # 暂定是0.15的概率去mask
-        probability_matrix = torch.full((bsz, seq_len), 0.15, device=masked_target.device, dtype=dtype)
+        probability_matrix = torch.full((bsz, seq_len), 0.15, device=masked_target.device, dtype=torch.float)
         y_mask = torch.bernoulli(probability_matrix).bool().to(masked_target.device)
         y_encoder_padding_mask = masked_target.eq(self.padding_idx)
+        # 排除掉padding eos
         y_mask = y_mask & (~y_encoder_padding_mask) & (~masked_target.eq(2))
         # bos = 0 as <mask>
         masked_target.masked_fill_(y_mask, 0)
@@ -129,7 +164,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             )
         return lprobs.detach(), y_mask, loss
 
-    def forward_x_cross_s(self, model, sample, reduce):
+    def forward_x_cross_s(self, model, sample, y_mask, reduce):
         text_input = {
             "audio": sample["net_input"]["audio"],
             "audio_lengths": sample["net_input"]["audio_lengths"],
@@ -140,8 +175,42 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         decoder_out = model.decoder(
             prev_output_tokens=prev_output_tokens, encoder_out=encoder_out
         )
-        loss, _, lprobs, target = self.compute_loss_with_lprobs(model, decoder_out, sample, reduce=reduce)
-        return loss, lprobs, target
+        lprobs = model.get_normalized_probs(decoder_out, log_probs=True)
+        target = model.get_targets(sample, decoder_out)
+
+        if y_mask is not None:
+            padding_mask = sample["target"].eq(self.padding_idx)
+            y_nomask = (~y_mask) & (~padding_mask)
+            loss_masked, _ = label_smoothed_nll_loss(
+                lprobs[y_mask],
+                target[y_mask],
+                self.eps,
+                ignore_index=self.padding_idx,
+                reduce=reduce,
+            )
+            loss_nomasked, _ = label_smoothed_nll_loss(
+                lprobs[y_nomask],
+                target[y_nomask],
+                self.eps,
+                ignore_index=self.padding_idx,
+                reduce=reduce,
+            )
+            dist_dict = {
+                "lprobs_mask": lprobs[y_mask],
+                "lprobs_nomask": lprobs[y_nomask],
+                "target_mask": target[y_mask],
+                "target_nomask": target[y_nomask],
+            }
+            return loss_masked, loss_nomasked, dist_dict
+        else:
+            loss, _ = label_smoothed_nll_loss(
+                lprobs,
+                target,
+                self.eps,
+                ignore_index=self.padding_idx,
+                reduce=reduce,
+            )
+            return loss
 
     def forward_ext_mt(self, model, sample, reduce):
         text_output = model(**sample["net_input"])
@@ -168,23 +237,33 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             if self.mt_finetune and self.training:
                 st_size = mt_size = sample_size = sample["ntokens"]
                 bsz, seq_len = sample["target"].size()
-                st_loss, st_lprobs, st_target = self.forward_st(model, sample, reduce)
+                # 1. cmlm first
+                cmlm_lprobs, y_mask, cmlm_loss = self.forward_cmlm(model, sample)
+
+                st_loss_mask, st_loss_nomask, st_dist = self.forward_st(model, sample, y_mask, reduce)
                 # mt_loss = self.forward_mt(model, sample, reduce)
-                mt_loss, x_cross_s_lprobs, mt_target = self.forward_x_cross_s(model, sample, reduce)
-                # cmlm_loss的权重可以调整
-                cmlm_lprobs, y_mask, cmlm_loss = self.forward_cmlm(model, sample, x_cross_s_lprobs.dtype)
-                jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx)
+                mt_loss_mask, mt_loss_nomask, mt_dist = self.forward_x_cross_s(model, sample, y_mask, reduce)
+                jsd_loss_nomask = self.compute_jsd_loss(st_dist["lprobs_nomask"], mt_dist["lprobs_nomask"], st_dist["target_nomask"], mt_dist["target_nomask"], self.padding_idx)
+                jsd_loss_mask = self.compute_jsd_loss(st_dist["lprobs_mask"], mt_dist["lprobs_mask"], st_dist["target_mask"], mt_dist["target_mask"], self.padding_idx)
+
+                weight = ((model.epoch - 6) / 25.0)
+                if weight < 0:
+                    weight = 0.0
+                if weight > 1:
+                    weight = 1.0
+                st_loss = st_loss_mask*weight + st_loss_nomask
+                mt_loss = mt_loss_mask*weight + mt_loss_nomask
+                jsd_loss = jsd_loss_mask*weight + jsd_loss_nomask
 
                 masked_num = y_mask.sum().item()
-                st_lprobs_selected = st_lprobs.view(bsz, seq_len, -1)[y_mask]
-                x_cross_s_lprobs_selected = x_cross_s_lprobs.view(bsz, seq_len, -1)[y_mask]
-                kl_loss = self.compute_kl_loss(st_lprobs_selected, x_cross_s_lprobs_selected, cmlm_lprobs)
+                kl_loss = self.compute_kl_loss(st_dist["lprobs_mask"], mt_dist["lprobs_mask"], cmlm_lprobs)
+                kl_loss = kl_loss*(1.0-weight)
 
                 loss = st_loss + mt_loss + jsd_loss + kl_loss
             # st(dev or train only)
             else:
-                st_loss, _, _ = self.forward_st(model, sample, reduce)
-                _, y_mask, cmlm_loss = self.forward_cmlm(model, sample, st_loss.dtype)
+                _, y_mask, cmlm_loss = self.forward_cmlm(model, sample)
+                st_loss = self.forward_st(model, sample, None, reduce)
                 masked_num = y_mask.sum().item()
                 loss = st_loss
                 st_size = sample_size = sample["ntokens"]
