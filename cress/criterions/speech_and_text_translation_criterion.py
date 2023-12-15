@@ -66,6 +66,14 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         kl_loss = (kl_loss_st + kl_loss_mt) / 2.0
         return kl_loss
 
+    def compute_kl_loss(self, st_lprobs, mt_lprobs, teacher_lprobs):
+        kl_loss_st = F.kl_div(st_lprobs, teacher_lprobs, log_target=True, reduction="none").sum(-1)
+        kl_loss_mt = F.kl_div(mt_lprobs, teacher_lprobs, log_target=True, reduction="none").sum(-1)
+        kl_loss_st = kl_loss_st.sum()
+        kl_loss_mt = kl_loss_mt.sum()
+        kl_loss = (kl_loss_st + kl_loss_mt) / 2.0
+        return kl_loss
+
     def forward_st(self, model, sample, reduce):
         audio_input = {
             "src_tokens": sample["net_input"]["audio"],
@@ -99,7 +107,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         y_mask = y_mask & (~y_encoder_padding_mask) & (~masked_target.eq(2))
         # bos = 0 as <mask>
         masked_target.masked_fill_(y_mask, 0)
-        masked_num = y_mask.sum().item()
+        # masked_num = y_mask.sum().item()
 
         text_input = {
             "src_tokens": sample["net_input"]["source"],
@@ -107,20 +115,19 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "mode": "mt",
             "prev_output_tokens": masked_target,
         }
-        text_output = model.forward_cmlm(**text_input)
-
-        lprobs = model.get_normalized_probs(text_output, log_probs=True)
-        lprobs = lprobs[y_mask]
-        target = masked_target[y_mask]
-
-        loss, nll_loss = label_smoothed_nll_loss(
-            lprobs,
-            target,
-            self.eps,
-            ignore_index=self.padding_idx,
-            reduce=True,
-        )
-        return loss, masked_num
+        with torch.no_grad():
+            text_output = model.forward_cmlm(**text_input)
+            lprobs = model.get_normalized_probs(text_output, log_probs=True)
+            lprobs = lprobs[y_mask]
+            target = masked_target[y_mask]
+            loss, nll_loss = label_smoothed_nll_loss(
+                lprobs,
+                target,
+                self.eps,
+                ignore_index=self.padding_idx,
+                reduce=True,
+            )
+        return lprobs.detach(), y_mask, loss
 
     def forward_x_cross_s(self, model, sample, reduce):
         text_input = {
@@ -158,26 +165,26 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         if mode == "st":
             # st + mt
             if self.mt_finetune and self.training:
+                st_size = mt_size = sample_size = sample["ntokens"]
+                bsz, seq_len = sample["target"].size()
                 st_loss, st_lprobs, st_target = self.forward_st(model, sample, reduce)
                 # mt_loss = self.forward_mt(model, sample, reduce)
                 mt_loss, x_cross_s_lprobs, mt_target = self.forward_x_cross_s(model, sample, reduce)
                 # cmlm_loss的权重可以调整
-                cmlm_loss, masked_num = self.forward_cmlm(model, sample, x_cross_s_lprobs.dtype)
+                cmlm_lprobs, y_mask, cmlm_loss = self.forward_cmlm(model, sample, x_cross_s_lprobs.dtype)
                 jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx)
 
-                # set weight
-                weight = 0.7
-                st_loss = weight * st_loss
-                mt_loss = weight * mt_loss
-                jsd_loss = weight * jsd_loss
-                cmlm_loss = (1-weight) * cmlm_loss
+                masked_num = y_mask.sum().item()
+                st_lprobs_selected = st_lprobs.view(bsz, seq_len, -1)[y_mask]
+                x_cross_s_lprobs_selected = x_cross_s_lprobs.view(bsz, seq_len, -1)[y_mask]
+                kl_loss = self.compute_kl_loss(st_lprobs_selected, x_cross_s_lprobs_selected, cmlm_lprobs)
 
-                loss = st_loss + mt_loss + jsd_loss + cmlm_loss
-                st_size = mt_size = sample_size = sample["ntokens"]
+                loss = st_loss + mt_loss + jsd_loss + kl_loss
             # st(dev or train only)
             else:
                 st_loss, _, _ = self.forward_st(model, sample, reduce)
-                cmlm_loss, masked_num = self.forward_cmlm(model, sample, st_loss.dtype)
+                _, y_mask, cmlm_loss = self.forward_cmlm(model, sample, st_loss.dtype)
+                masked_num = y_mask.sum().item()
                 loss = st_loss
                 st_size = sample_size = sample["ntokens"]
         elif mode == "ext_mt":

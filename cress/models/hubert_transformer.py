@@ -69,9 +69,15 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
         )
         return S2THubInterface(x["args"], x["task"], x["models"][0])
 
-    def __init__(self, encoder, decoder, decoder_cmlm):
+    def __init__(self, encoder, decoder, cmlm_encoder, cmlm_decoder):
         super().__init__(encoder, decoder)
-        self.decoder_cmlm = decoder_cmlm
+        self.cmlm_encoder = cmlm_encoder
+        self.cmlm_decoder = cmlm_decoder
+        # 禁用梯度
+        for param in self.cmlm_encoder.parameters():
+            param.requires_grad = False
+        for param in self.cmlm_decoder.parameters():
+            param.requires_grad = False
         self.epoch = 1
     
     def set_epoch(self, epoch):
@@ -206,6 +212,11 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
             type=str,
             help="model to take mt encoder/decoder weight from (for initialization)",
         )
+        parser.add_argument(
+            "--load-cmlm",
+            type=str,
+            help="cmlm model to load from",
+        )
 
     @classmethod
     def build_encoder(cls, args, task=None, embed_tokens=None):
@@ -233,7 +244,6 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
         encoder_embed_tokens = decoder_embed_tokens
         encoder = cls.build_encoder(args, task, encoder_embed_tokens)
         decoder = cls.build_decoder(args, task, decoder_embed_tokens)
-        decoder_cmlm = cls.build_decoder(args, task, decoder_embed_tokens)
         # load pretrained mt models
         mt_pretrained_path = getattr(args, "load_pretrained_mt_encoder_decoder_from", None)
         if mt_pretrained_path is not None and Path(mt_pretrained_path).exists():
@@ -251,9 +261,36 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
                     mt_decoder_state_dict[subkey] = state_dict[key]
             encoder.load_state_dict(mt_encoder_state_dict, strict=False)
             decoder.load_state_dict(mt_decoder_state_dict, strict=False)
-            decoder_cmlm.load_state_dict(mt_decoder_state_dict, strict=False)
 
-        return cls(encoder, decoder, decoder_cmlm)
+        # cls.cmlm_pretrained_path = cmlm_pretrained_path
+        cmlm_pretrained_path = getattr(args, "load_cmlm", None)
+        if cmlm_pretrained_path is not None:
+            state_dict = checkpoint_utils.load_checkpoint_to_cpu(cmlm_pretrained_path)["model"]
+
+            # 注意embedding也是独立的, 否则把梯度设置为False会报错
+            cmlm_embed_tokens = build_embedding(
+                task.target_dictionary, args.decoder_embed_dim
+            )
+            cmlm_encoder = cls.build_encoder(args, task, cmlm_embed_tokens)
+            cmlm_decoder = cls.build_decoder(args, task, cmlm_embed_tokens)
+
+            mt_encoder_state_dict = OrderedDict()
+            mt_decoder_state_dict = OrderedDict()
+            for key in state_dict.keys():
+                if key.startswith("encoder"):
+                    subkey = key[len("encoder") + 1 :]
+                    mt_encoder_state_dict[subkey] = state_dict[key]
+                elif key.startswith("decoder_cmlm"):
+                    subkey = key[len("decoder_cmlm") + 1 :]
+                    mt_decoder_state_dict[subkey] = state_dict[key]
+                elif key.startswith("decoder"):
+                    pass
+                else:
+                    raise RuntimeError("not encoder or decoder.")
+            cmlm_encoder.load_state_dict(mt_encoder_state_dict, strict=True)
+            cmlm_decoder.load_state_dict(mt_decoder_state_dict, strict=True)
+
+        return cls(encoder, decoder, cmlm_encoder, cmlm_decoder)
 
     def get_normalized_probs(
         self,
@@ -284,8 +321,8 @@ class HubertTransformerModel(FairseqEncoderDecoderModel):
         argument in its input, which is not supported in torchscript. This
         method overwrites the forward method definition without **kwargs.
         """
-        encoder_out = self.encoder(src_tokens=src_tokens, src_lengths=src_lengths, mode=mode)
-        decoder_out = self.decoder_cmlm(
+        encoder_out = self.cmlm_encoder(src_tokens=src_tokens, src_lengths=src_lengths, mode=mode)
+        decoder_out = self.cmlm_decoder(
             prev_output_tokens=prev_output_tokens, encoder_out=encoder_out, full_context_alignment=full_context_alignment
         )
         return decoder_out
