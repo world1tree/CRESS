@@ -158,6 +158,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         st_loss, mt_loss, ext_mt_loss = torch.Tensor([0]), torch.Tensor([0]), torch.Tensor([0])
         cmlm_loss = torch.Tensor([0])
         jsd_loss = torch.Tensor([0])
+        kl_loss = torch.Tensor([0])
         st_size, mt_size, ext_mt_size = 0, 0, 0
         masked_num = 0
 
@@ -198,6 +199,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "mt_loss": mt_loss.data,
             "mt_sample_size": mt_size,
             "jsd_loss": jsd_loss.data,
+            "kl_loss": kl_loss.data,
             "cmlm_loss": cmlm_loss.data,
             "ext_mt_loss": ext_mt_loss.data,
             "ext_mt_sample_size": ext_mt_size,
@@ -222,6 +224,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         ext_mt_sample_size = sum(log.get("ext_mt_sample_size", 0) for log in logging_outputs)
         cmlm_loss_sum = sum(log.get("cmlm_loss", 0) for log in logging_outputs)
         jsd_loss_sum = sum(log.get("jsd_loss", 0) for log in logging_outputs)
+        kl_loss_sum = sum(log.get("kl_loss", 0) for log in logging_outputs)
         masked_num = sum(log.get("masked_num", 0) for log in logging_outputs)
 
         metrics.log_scalar(
@@ -235,6 +238,9 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         )
         metrics.log_scalar(
             "cmlm_loss", cmlm_loss_sum / masked_num / math.log(2) if masked_num != 0 else 0, masked_num, round=3
+        )
+        metrics.log_scalar(
+            "kl_loss", kl_loss_sum / masked_num / math.log(2) if masked_num != 0 else 0, masked_num, round=3
         )
         metrics.log_scalar(
             "jsd_loss", jsd_loss_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
