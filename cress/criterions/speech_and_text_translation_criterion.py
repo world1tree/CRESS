@@ -111,7 +111,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
 
         lprobs = model.get_normalized_probs(text_output, log_probs=True)
         lprobs = lprobs[y_mask]
-        target = masked_target[y_mask]
+        target = sample["target"][y_mask]
 
         loss, nll_loss = label_smoothed_nll_loss(
             lprobs,
