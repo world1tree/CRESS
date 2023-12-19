@@ -99,12 +99,14 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         # bos = 0 as <mask>
         masked_target.masked_fill_(y_mask, 0)
         masked_num = y_mask.sum().item()
+        masked_target_mt = masked_target
+        masked_target_st = masked_target.clone()
 
         text_input = {
             "src_tokens": sample["net_input"]["source"],
             "src_lengths": sample["net_input"]["source_lengths"],
             "mode": "mt",
-            "prev_output_tokens": masked_target,
+            "prev_output_tokens": masked_target_mt,
         }
         # self-attention no mask
         text_output = model.forward_cmlm(**text_input)
@@ -125,7 +127,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "src_tokens": sample["net_input"]["audio"],
             "src_lengths": sample["net_input"]["audio_lengths"],
             "mode": "st",
-            "prev_output_tokens": masked_target,
+            "prev_output_tokens": masked_target_st,
         }
         # self-attention no mask
         audio_output = model.forward_cmlm(**audio_input)
