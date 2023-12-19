@@ -66,12 +66,9 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         kl_loss = (kl_loss_st + kl_loss_mt) / 2.0
         return kl_loss
 
-    def compute_kl_loss(self, st_lprobs, mt_lprobs, teacher_lprobs):
-        kl_loss_st = F.kl_div(st_lprobs, teacher_lprobs, log_target=True, reduction="none").sum(-1)
-        kl_loss_mt = F.kl_div(mt_lprobs, teacher_lprobs, log_target=True, reduction="none").sum(-1)
-        kl_loss_st = kl_loss_st.sum()
-        kl_loss_mt = kl_loss_mt.sum()
-        kl_loss = (kl_loss_st + kl_loss_mt) / 2.0
+    def compute_kl_loss(self, lprobs, teacher_lprobs):
+        kl_loss = F.kl_div(lprobs, teacher_lprobs, log_target=True, reduction="none").sum(-1)
+        kl_loss = kl_loss.sum()
         return kl_loss
 
     def forward_st(self, model, sample, reduce):
@@ -112,16 +109,28 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "src_lengths": sample["net_input"]["source_lengths"],
             "mode": "mt",
         }
+
+        audio_input = {
+            "src_tokens": sample["net_input"]["audio"],
+            "src_lengths": sample["net_input"]["audio_lengths"],
+            "mode": "st",
+        }
+
         prev_output_tokens = masked_target
         model.cmlm_model[0] = model.cmlm_model[0].to(y_mask.device)
         model.cmlm_model[1] = model.cmlm_model[1].to(y_mask.device)
         with torch.no_grad():
-            encoder_out = model.cmlm_model[0](**text_input)
-            decoder_out = model.cmlm_model[1](prev_output_tokens=prev_output_tokens, encoder_out=encoder_out, full_context_alignment=True)
-            lprobs = model.get_normalized_probs(decoder_out, log_probs=True)
-            lprobs = lprobs[y_mask]
+            encoder_out_mt = model.cmlm_model[0](**text_input)
+            decoder_out_mt = model.cmlm_model[1](prev_output_tokens=prev_output_tokens, encoder_out=encoder_out_mt, full_context_alignment=True)
+            lprobs_mt = model.get_normalized_probs(decoder_out_mt, log_probs=True)
+            lprobs_mt_selected = lprobs_mt[y_mask]
 
-        return lprobs.detach(), y_mask
+            encoder_out_st = model.cmlm_model[0](**audio_input)
+            decoder_out_st = model.cmlm_model[1](prev_output_tokens=prev_output_tokens, encoder_out=encoder_out_st, full_context_alignment=True)
+            lprobs_st = model.get_normalized_probs(decoder_out_st, log_probs=True)
+            lprobs_st_selected = lprobs_st[y_mask]
+
+        return lprobs_mt_selected.detach(), lprobs_st_selected.detach(), y_mask
 
     def forward_x_cross_s(self, model, sample, reduce):
         text_input = {
@@ -150,9 +159,9 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         3) logging outputs to display while training
         """
         st_loss, mt_loss, ext_mt_loss = torch.Tensor([0]), torch.Tensor([0]), torch.Tensor([0])
-        cmlm_loss = torch.Tensor([0])
         jsd_loss = torch.Tensor([0])
-        kl_loss = torch.Tensor([0])
+        kl_loss_mt = torch.Tensor([0])
+        kl_loss_st = torch.Tensor([0])
         st_size, mt_size, ext_mt_size = 0, 0, 0
         masked_num = 0
 
@@ -166,13 +175,14 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 # mt_loss = self.forward_mt(model, sample, reduce)
                 mt_loss, x_cross_s_lprobs, mt_target = self.forward_x_cross_s(model, sample, reduce)
                 # cmlm_loss的权重可以调整
-                cmlm_lprobs, y_mask = self.forward_cmlm(model, sample, x_cross_s_lprobs.dtype)
+                cmlm_lprobs_mt, cmlm_lprobs_st, y_mask = self.forward_cmlm(model, sample, x_cross_s_lprobs.dtype)
                 jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx)
                 masked_num = y_mask.sum().item()
                 st_lprobs_selected = st_lprobs.view(bsz, seq_len, -1)[y_mask]
                 x_cross_s_lprobs_selected = x_cross_s_lprobs.view(bsz, seq_len, -1)[y_mask]
-                kl_loss = self.compute_kl_loss(st_lprobs_selected, x_cross_s_lprobs_selected, cmlm_lprobs)
-                loss = st_loss + mt_loss + jsd_loss + kl_loss
+                kl_loss_mt = self.compute_kl_loss(x_cross_s_lprobs_selected, cmlm_lprobs_mt)
+                kl_loss_st = self.compute_kl_loss(st_lprobs_selected, cmlm_lprobs_st)
+                loss = st_loss + mt_loss + jsd_loss + kl_loss_mt + kl_loss_st
             # st(dev or train only)
             else:
                 st_loss, _, _ = self.forward_st(model, sample, reduce)
@@ -189,8 +199,8 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "mt_loss": mt_loss.data,
             "mt_sample_size": mt_size,
             "jsd_loss": jsd_loss.data,
-            "kl_loss": kl_loss.data,
-            "cmlm_loss": cmlm_loss.data,
+            "kl_loss_st": kl_loss_st.data,
+            "kl_loss_mt": kl_loss_mt.data,
             "ext_mt_loss": ext_mt_loss.data,
             "ext_mt_sample_size": ext_mt_size,
             "ntokens": sample["ntokens"],
@@ -212,8 +222,9 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         st_sample_size = sum(log.get("st_sample_size", 0) for log in logging_outputs)
         mt_sample_size = sum(log.get("mt_sample_size", 0) for log in logging_outputs)
         ext_mt_sample_size = sum(log.get("ext_mt_sample_size", 0) for log in logging_outputs)
-        cmlm_loss_sum = sum(log.get("cmlm_loss", 0) for log in logging_outputs)
         jsd_loss_sum = sum(log.get("jsd_loss", 0) for log in logging_outputs)
+        kl_loss_st_sum = sum(log.get("kl_loss_st", 0) for log in logging_outputs)
+        kl_loss_mt_sum = sum(log.get("kl_loss_mt", 0) for log in logging_outputs)
         kl_loss_sum = sum(log.get("kl_loss", 0) for log in logging_outputs)
         masked_num = sum(log.get("masked_num", 0) for log in logging_outputs)
 
@@ -227,7 +238,10 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "mt_loss", mt_loss_sum / mt_sample_size / math.log(2) if mt_sample_size != 0 else 0, mt_sample_size, round=3
         )
         metrics.log_scalar(
-            "cmlm_loss", cmlm_loss_sum / masked_num / math.log(2) if masked_num != 0 else 0, masked_num, round=3
+            "kl_loss_st", kl_loss_st_sum / masked_num / math.log(2) if masked_num != 0 else 0, masked_num, round=3
+        )
+        metrics.log_scalar(
+            "kl_loss_mt", kl_loss_mt_sum / masked_num / math.log(2) if masked_num != 0 else 0, masked_num, round=3
         )
         metrics.log_scalar(
             "kl_loss", kl_loss_sum / masked_num / math.log(2) if masked_num != 0 else 0, masked_num, round=3
