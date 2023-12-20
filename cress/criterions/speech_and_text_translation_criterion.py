@@ -101,13 +101,14 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         masked_num = y_mask.sum().item()
 
         text_input = {
-            "src_tokens": sample["net_input"]["source"],
-            "src_lengths": sample["net_input"]["source_lengths"],
-            "mode": "mt",
-            "prev_output_tokens": masked_target,
+            "audio": sample["net_input"]["audio"],
+            "audio_lengths": sample["net_input"]["audio_lengths"],
+            "source": sample["net_input"]["source"],
         }
-        # self-attention no mask
-        text_output = model.forward_cmlm(**text_input)
+        encoder_out = model.encoder.forward_x_cross_s(**text_input)
+        text_output = model.decoder(
+            prev_output_tokens=masked_target, encoder_out=encoder_out, full_context_alignment=True
+        )
 
         lprobs = model.get_normalized_probs(text_output, log_probs=True)
         lprobs = lprobs[y_mask]
