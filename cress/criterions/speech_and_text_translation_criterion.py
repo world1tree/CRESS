@@ -182,7 +182,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 x_cross_s_lprobs_selected = x_cross_s_lprobs.view(bsz, seq_len, -1)[y_mask]
                 kl_loss_mt = self.compute_kl_loss(x_cross_s_lprobs_selected, cmlm_lprobs_mt)
                 kl_loss_st = self.compute_kl_loss(st_lprobs_selected, cmlm_lprobs_st)
-                loss = st_loss + mt_loss + jsd_loss + kl_loss_mt + kl_loss_st
+                loss = (st_loss + mt_loss + jsd_loss)/sample_size + (kl_loss_mt + kl_loss_st)/masked_num
             # st(dev or train only)
             else:
                 st_loss, _, _ = self.forward_st(model, sample, reduce)
