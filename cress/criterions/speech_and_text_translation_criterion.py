@@ -102,26 +102,27 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         masked_target_mt = masked_target
         masked_target_st = masked_target.clone()
 
-        text_input = {
-            "src_tokens": sample["net_input"]["source"],
-            "src_lengths": sample["net_input"]["source_lengths"],
-            "mode": "mt",
-            "prev_output_tokens": masked_target_mt,
-        }
+        # text_input = {
+        #     "src_tokens": sample["net_input"]["source"],
+        #     "src_lengths": sample["net_input"]["source_lengths"],
+        #     "mode": "mt",
+        #     "prev_output_tokens": masked_target_mt,
+        # }
         # self-attention no mask
-        text_output = model.forward_cmlm(**text_input)
+        # text_output = model.forward_cmlm(**text_input)
 
-        lprobs_mt = model.get_normalized_probs(text_output, log_probs=True)
-        lprobs_mt_selected = lprobs_mt[y_mask]
+        # lprobs_mt = model.get_normalized_probs(text_output, log_probs=True)
+        # lprobs_mt_selected = lprobs_mt[y_mask]
         target = sample["target"][y_mask]
 
-        loss_mt, _ = label_smoothed_nll_loss(
-            lprobs_mt_selected,
-            target,
-            self.eps,
-            ignore_index=self.padding_idx,
-            reduce=True,
-        )
+        # loss_mt, _ = label_smoothed_nll_loss(
+        #     lprobs_mt_selected,
+        #     target,
+        #     self.eps,
+        #     ignore_index=self.padding_idx,
+        #     reduce=True,
+        # )
+        loss_mt = torch.tensor(0.0)
 
         audio_input = {
             "src_tokens": sample["net_input"]["audio"],
@@ -186,14 +187,14 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 # mt_loss = self.forward_mt(model, sample, reduce)
                 mt_loss, x_cross_s_lprobs, mt_target = self.forward_x_cross_s(model, sample, reduce)
                 # cmlm_loss的权重可以调整
-                cmlm_loss_st, cmlm_loss_mt, masked_num = self.forward_cmlm(model, sample, x_cross_s_lprobs.dtype)
+                cmlm_loss_st, _, masked_num = self.forward_cmlm(model, sample, x_cross_s_lprobs.dtype)
                 jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx)
-                loss = st_loss + mt_loss + jsd_loss + cmlm_loss_st + cmlm_loss_mt
+                loss = st_loss + mt_loss + jsd_loss + cmlm_loss_st
                 st_size = mt_size = sample_size = sample["ntokens"]
             # st(dev or train only)
             else:
                 st_loss, _, _ = self.forward_st(model, sample, reduce)
-                cmlm_loss_st, cmlm_loss_mt, masked_num = self.forward_cmlm(model, sample, st_loss.dtype)
+                cmlm_loss_st, _, masked_num = self.forward_cmlm(model, sample, st_loss.dtype)
                 loss = st_loss
                 st_size = sample_size = sample["ntokens"]
         elif mode == "ext_mt":
