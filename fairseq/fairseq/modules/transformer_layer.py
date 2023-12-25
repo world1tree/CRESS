@@ -244,6 +244,7 @@ class TransformerEncoderLayerBase(nn.Module):
             # 在此处绘制热力图
             import seaborn as sns
             import torch.nn.functional as F
+            import matplotlib.pyplot as plt
             def draw_heatmap(heatmap_matrix, mask, text_label, fig_name):
                 # audio_hidden: T1, H
                 # text_hidden:  T2, H
@@ -251,9 +252,10 @@ class TransformerEncoderLayerBase(nn.Module):
                 assert len(heatmap_matrix.shape) == 2
                 text_len, total_len = heatmap_matrix.shape
                 heatmap_matrix = torch.softmax(heatmap_matrix, dim=-1)
+                plt.clf()
                 # ax = sns.heatmap(heatmap_matrix.detach().numpy(), annot=False, cmap="Blues", xticklabels=False, yticklabels=False)
                 # ax = sns.heatmap(heatmap_matrix.detach().numpy(), annot=True, cmap="Blues", vmin=-0.2, vmax=1.0)
-                ax = sns.heatmap(heatmap_matrix.detach().numpy(), annot=False, cmap="Blues", square=True, xticklabels=False, yticklabels=False, mask=mask.detach().numpy())
+                ax = sns.heatmap(heatmap_matrix.cpu().detach().numpy(), annot=False, cmap="Blues", square=True, xticklabels=False, yticklabels=False, mask=mask.cpu().detach().numpy())
                 # ax.set_xticklabels(tokens)
                 # ax.set_yticklabels(tokens, rotation=0)
                 ax.axvline(x=total_len-text_len, color='red', linewidth=2)
