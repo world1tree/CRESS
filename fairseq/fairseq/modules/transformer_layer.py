@@ -251,8 +251,8 @@ class TransformerEncoderLayerBase(nn.Module):
                 # T1, T2
                 assert len(heatmap_matrix.shape) == 2
                 text_len, total_len = heatmap_matrix.shape
-                heatmap_matrix = torch.softmax(heatmap_matrix, dim=-1)
                 plt.clf()
+                plt.figure(figsize=(8, 8))
                 # ax = sns.heatmap(heatmap_matrix.detach().numpy(), annot=False, cmap="Blues", xticklabels=False, yticklabels=False)
                 # ax = sns.heatmap(heatmap_matrix.detach().numpy(), annot=True, cmap="Blues", vmin=-0.2, vmax=1.0)
                 ax = sns.heatmap(heatmap_matrix.cpu().detach().numpy(), annot=False, cmap="Blues", square=True, xticklabels=False, yticklabels=False, mask=mask.cpu().detach().numpy())
