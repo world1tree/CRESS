@@ -167,6 +167,7 @@ class TransformerEncoderLayerBase(nn.Module):
         attn_mask: Optional[Tensor] = None,
         kv_prefix = None,
         kv_padding = None,
+        layer_num = -1,
     ):
         """
         Args:
@@ -266,8 +267,8 @@ class TransformerEncoderLayerBase(nn.Module):
             bsz, text_len, total_len = attn_scores.shape
             attn_scores_mask = encoder_padding_mask.unsqueeze(1).expand(bsz, text_len, total_len)
             for i in range(bsz):
-                draw_heatmap(attn_scores[i], attn_scores_mask[i], "QK-scores", "qk-scores_"+str(i)+".png")
-            exit(0)
+                label = str(layer_num) + "_" + str(i)
+                draw_heatmap(attn_scores[i], attn_scores_mask[i], "QK-scores", "qk-scores_"+label+".png")
 
         x = self.dropout_module(x)
         x = self.residual_connection(x, residual)

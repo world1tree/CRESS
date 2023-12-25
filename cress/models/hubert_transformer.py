@@ -464,12 +464,12 @@ class HubertTransformerEncoder(FairseqEncoder):
         #     if return_all_hiddens:
         #         encoder_states.append(x)
 
-        for layer in self.transformer_layers[:]:
+        for id, layer in enumerate(self.transformer_layers[:]):
             # kv_prefix: T, B, D
             # kv_padding: B, T
             # print("text: ", x.shape)
             # print("audio: ", s.shape)
-            x = layer(x, x_encoder_padding_mask, kv_prefix=s, kv_padding=s_encoder_padding_mask)
+            x = layer(x, x_encoder_padding_mask, kv_prefix=s, kv_padding=s_encoder_padding_mask, layer_num=id+1)
             if return_all_hiddens:
                 encoder_states.append(x)
 
