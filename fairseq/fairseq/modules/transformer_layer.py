@@ -218,14 +218,54 @@ class TransformerEncoderLayerBase(nn.Module):
                  ],
                 dim=1
             )
-        x, _ = self.self_attn(
-            query=x,
-            key=x_key,
-            value=x_value,
-            key_padding_mask=encoder_padding_mask,
-            need_weights=False,
-            attn_mask=attn_mask,
-        )
+
+        # 分支1: 没有x_cross_s
+        if kv_prefix is None:
+            x, _ = self.self_attn(
+                query=x,
+                key=x_key,
+                value=x_value,
+                key_padding_mask=encoder_padding_mask,
+                need_weights=False,
+                attn_mask=attn_mask,
+            )
+        else:
+            # attn_scores: batch-size, num-heads, text-len, text-len + audio-len if average_attn_weights=False
+            # attn_scores: batch-size, text-len, text-len + audio-len if average_attn_weights=True
+            x, attn_scores = self.self_attn(
+                query=x,
+                key=x_key,
+                value=x_value,
+                key_padding_mask=encoder_padding_mask,
+                need_weights=True,   # 为了计算attention
+                average_attn_weights=True,
+                attn_mask=attn_mask,
+            )
+            # 在此处绘制热力图
+            import seaborn as sns
+            import torch.nn.functional as F
+            def draw_heatmap(heatmap_matrix, mask, text_label, fig_name):
+                # audio_hidden: T1, H
+                # text_hidden:  T2, H
+                # T1, T2
+                assert len(heatmap_matrix.shape) == 2
+                text_len, total_len = heatmap_matrix.shape
+                heatmap_matrix = torch.softmax(heatmap_matrix, dim=-1)
+                # ax = sns.heatmap(heatmap_matrix.detach().numpy(), annot=False, cmap="Blues", xticklabels=False, yticklabels=False)
+                # ax = sns.heatmap(heatmap_matrix.detach().numpy(), annot=True, cmap="Blues", vmin=-0.2, vmax=1.0)
+                ax = sns.heatmap(heatmap_matrix.detach().numpy(), annot=False, cmap="Blues", square=True, xticklabels=False, yticklabels=False, mask=mask.detach().numpy())
+                # ax.set_xticklabels(tokens)
+                # ax.set_yticklabels(tokens, rotation=0)
+                ax.axvline(x=total_len-text_len, color='red', linewidth=2)
+                ax.set(xlabel="audio+text", ylabel="text")
+                ax.set_title("x_cross_s")
+                fig = ax.get_figure()
+                fig.savefig(fig_name)
+            bsz, text_len, total_len = attn_scores.shape
+            attn_scores_mask = encoder_padding_mask.unsqueeze(1).expand(bsz, text_len, total_len)
+            for i in range(bsz):
+                draw_heatmap(attn_scores[i], attn_scores_mask[i], "qk-scores", "qk-scores_"+str(i)+".png")
+
         x = self.dropout_module(x)
         x = self.residual_connection(x, residual)
         if not self.normalize_before:

@@ -478,6 +478,7 @@ class MultiheadAttention(FairseqIncrementalDecoder):
         attn_mask: Optional[Tensor] = None,
         before_softmax: bool = False,
         need_head_weights: bool = False,
+        average_attn_weights=True
     ) -> Tuple[Tensor, Optional[Tensor]]:
         """Input shape: Time x Batch x Channel
 
@@ -554,6 +555,7 @@ class MultiheadAttention(FairseqIncrementalDecoder):
                     key_padding_mask.bool() if key_padding_mask is not None else None,
                     need_weights,
                     attn_mask,
+                    average_attn_weights=average_attn_weights,
                     use_separate_proj_weight=True,
                     q_proj_weight=self.q_proj.weight,
                     k_proj_weight=self.k_proj.weight,

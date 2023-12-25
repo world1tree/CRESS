@@ -114,8 +114,8 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         2) the sample size, which is used as the denominator for the gradient
         3) logging outputs to display while training
         """
-        st_loss, mt_loss, ext_mt_loss = torch.Tensor([0]).cuda(), torch.Tensor([0]).cuda(), torch.Tensor([0]).cuda()
-        jsd_loss = torch.Tensor([0]).cuda()
+        st_loss, mt_loss, ext_mt_loss = torch.Tensor([0]), torch.Tensor([0]), torch.Tensor([0])
+        jsd_loss = torch.Tensor([0])
         st_size, mt_size, ext_mt_size = 0, 0, 0
 
         mode = sample["net_input"]["mode"]

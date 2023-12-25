@@ -436,13 +436,13 @@ class HubertTransformerEncoder(FairseqEncoder):
         s = s.transpose(0, 1)
 
         # 还需要让语音经过encoder
-        for layer in self.transformer_layers:
+        # for layer in self.transformer_layers:
             # kv_prefix: T, B, D
             # kv_padding: B, T
-            s = layer(s, s_encoder_padding_mask)
+            # s = layer(s, s_encoder_padding_mask)
 
-        if self.layer_norm is not None:
-            s = self.layer_norm(s)
+        # if self.layer_norm is not None:
+        #     s = self.layer_norm(s)
 
         # 2. 对文本编码
         x_encoder_padding_mask = source.eq(self.padding_idx)
@@ -467,6 +467,8 @@ class HubertTransformerEncoder(FairseqEncoder):
         for layer in self.transformer_layers[:]:
             # kv_prefix: T, B, D
             # kv_padding: B, T
+            # print("text: ", x.shape)
+            # print("audio: ", s.shape)
             x = layer(x, x_encoder_padding_mask, kv_prefix=s, kv_padding=s_encoder_padding_mask)
             if return_all_hiddens:
                 encoder_states.append(x)
