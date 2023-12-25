@@ -257,14 +257,15 @@ class TransformerEncoderLayerBase(nn.Module):
                 # ax.set_xticklabels(tokens)
                 # ax.set_yticklabels(tokens, rotation=0)
                 ax.axvline(x=total_len-text_len, color='red', linewidth=2)
-                ax.set(xlabel="audio+text", ylabel="text")
-                ax.set_title("x_cross_s")
+                ax.set(xlabel="V(audio+text)", ylabel="Q(text)")
+                ax.set_title(text_label)
                 fig = ax.get_figure()
                 fig.savefig(fig_name)
             bsz, text_len, total_len = attn_scores.shape
             attn_scores_mask = encoder_padding_mask.unsqueeze(1).expand(bsz, text_len, total_len)
             for i in range(bsz):
-                draw_heatmap(attn_scores[i], attn_scores_mask[i], "qk-scores", "qk-scores_"+str(i)+".png")
+                draw_heatmap(attn_scores[i], attn_scores_mask[i], "QK-scores", "qk-scores_"+str(i)+".png")
+            exit(0)
 
         x = self.dropout_module(x)
         x = self.residual_connection(x, residual)
