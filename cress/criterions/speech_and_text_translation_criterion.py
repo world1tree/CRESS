@@ -97,24 +97,16 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         return loss
 
     def forward_cmlm(self, model, sample, dtype):
-        # We randomly mask target with 15% probability
-        masked_target = sample["target"].clone()
-        bsz, seq_len = masked_target.size()
-        probability_matrix = torch.full((bsz, seq_len), 0.15, device=masked_target.device, dtype=dtype)
-        y_mask = torch.bernoulli(probability_matrix).bool().to(masked_target.device)
-        y_encoder_padding_mask = masked_target.eq(self.padding_idx)
-        y_mask = y_mask & (~y_encoder_padding_mask)
-        # bos = 0 as <mask>
-        masked_target.masked_fill_(y_mask, 0)
-
+        target_mask = sample["target_mask"]
+        y_mask = target_mask.eq(0)
         text_input = {
             "src_tokens": sample["net_input"]["source"],
             "src_lengths": sample["net_input"]["source_lengths"],
             "mode": "mt",
         }
-        prev_output_tokens = masked_target
-        model.cmlm_model[0] = model.cmlm_model[0].to(y_mask.device)
-        model.cmlm_model[1] = model.cmlm_model[1].to(y_mask.device)
+        prev_output_tokens = target_mask
+        model.cmlm_model[0] = model.cmlm_model[0].to(target_mask.device)
+        model.cmlm_model[1] = model.cmlm_model[1].to(target_mask.device)
         with torch.no_grad():
             encoder_out = model.cmlm_model[0](**text_input)
             decoder_out = model.cmlm_model[1](prev_output_tokens=prev_output_tokens, encoder_out=encoder_out, full_context_alignment=True)

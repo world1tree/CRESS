@@ -39,6 +39,7 @@ class SpeechAndTextTranslationDatasetItem(object):
     audio: torch.Tensor
     source: torch.Tensor
     target: torch.Tensor
+    target_mask: torch.Tensor
     speaker_id: Optional[int] = None
 
 
@@ -219,18 +220,30 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
         target = self.tgt_dict.encode_line(
             tokenized, add_if_not_exist=False, append_eos=self.append_eos
         ).long()
+        target_length = target.size(0)
         # False
         if self.cfg.prepend_tgt_lang_tag:
+            raise RuntimeError("shouldn't happen")
             lang_tag_idx = self.get_lang_tag_idx(
                 self.tgt_langs[index], self.tgt_dict
             )
             target = torch.cat((torch.LongTensor([lang_tag_idx]), target), 0)
 
+        target_mask = self.tgt_dict.encode_line(
+            tokenized, add_if_not_exist=False, append_eos=self.append_eos
+        ).long()
+        # 1 ~ target_length-1, 因为有eos
+        sample_size = np.random.randint(1, target_length)
+        # 0 ~ target_length-2
+        idx_for_mask = np.random.choice(target_length-1, size=sample_size, replace=False)
+        # 0
+        target_mask[idx_for_mask] = self.tgt_dict.bos()
+
         speaker_id = None
         if self.speaker_to_id is not None:
             speaker_id = self.speaker_to_id[self.speakers[index]]
         return SpeechAndTextTranslationDatasetItem(
-            index=index, audio=audio, source=source, target=target, speaker_id=speaker_id
+            index=index, audio=audio, source=source, target=target, target_mask=target_mask, speaker_id=speaker_id
         )
 
     def __len__(self):
@@ -274,6 +287,16 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
         target_lengths = torch.tensor(
             [x.target.size(0) for x in samples], dtype=torch.long
         ).index_select(0, order)
+
+        target_mask = fairseq_data_utils.collate_tokens(
+            [x.target_mask for x in samples],
+            self.tgt_dict.pad(),
+            self.tgt_dict.eos(),
+            left_pad=False,
+            move_eos_to_beginning=False,
+        )
+        target_mask = target_mask.index_select(0, order)
+
         # eos, ..., ...
         prev_output_tokens = fairseq_data_utils.collate_tokens(
             [x.target for x in samples],
@@ -305,6 +328,7 @@ class SpeechAndTextTranslationDataset(FairseqDataset):
             "net_input": net_input,
             "speaker": speaker,
             "target": target,
+            "target_mask": target_mask,
             "target_lengths": target_lengths,
             "ntokens": ntokens,
             "nsentences": len(samples),
