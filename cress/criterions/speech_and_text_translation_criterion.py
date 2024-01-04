@@ -89,27 +89,18 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         return loss
 
     def forward_cmlm(self, model, sample, dtype):
-        # We randomly mask target with 15% probability
-        masked_target = sample["target"].clone()
-        bsz, seq_len = masked_target.size()
-        probability_matrix = torch.full((bsz, seq_len), 0.15, device=masked_target.device, dtype=dtype)
-        y_mask = torch.bernoulli(probability_matrix).bool().to(masked_target.device)
-        y_encoder_padding_mask = masked_target.eq(self.padding_idx)
-        y_mask = y_mask & (~y_encoder_padding_mask) & (~masked_target.eq(2))
-        # bos = 0 as <mask>
-        masked_target.masked_fill_(y_mask, 0)
-        masked_num = y_mask.sum().item()
-
+        target_mask = sample["target_mask"]
         text_input = {
             "src_tokens": sample["net_input"]["source"],
             "src_lengths": sample["net_input"]["source_lengths"],
             "mode": "mt",
-            "prev_output_tokens": masked_target,
+            "prev_output_tokens": target_mask,
         }
         # self-attention no mask
         text_output = model.forward_cmlm(**text_input)
-
         lprobs = model.get_normalized_probs(text_output, log_probs=True)
+
+        y_mask = target_mask.eq(0)
         lprobs = lprobs[y_mask]
         target = sample["target"][y_mask]
 
@@ -120,6 +111,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             ignore_index=self.padding_idx,
             reduce=True,
         )
+        masked_num = y_mask.sum()
         return loss, masked_num
 
     def forward_x_cross_s(self, model, sample, reduce):
