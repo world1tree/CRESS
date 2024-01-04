@@ -254,6 +254,12 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "jsd_loss", jsd_loss_sum / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
         )
         metrics.log_scalar(
+            "low_st", masked_num_st / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
+        )
+        metrics.log_scalar(
+            "low_mt", masked_num_mt / sample_size / math.log(2) if sample_size != 0 else 0, sample_size, round=3
+        )
+        metrics.log_scalar(
             "ext_mt_loss", ext_mt_loss_sum / ext_mt_sample_size / math.log(2) if ext_mt_sample_size != 0 else 0, ext_mt_sample_size, round=3
         )
 
