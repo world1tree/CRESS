@@ -113,15 +113,13 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             "mode": "mt",
         }
         prev_output_tokens = masked_target
-        model.cmlm_model[0] = model.cmlm_model[0].to(y_mask.device)
-        model.cmlm_model[1] = model.cmlm_model[1].to(y_mask.device)
-        with torch.no_grad():
-            encoder_out = model.cmlm_model[0](**text_input)
-            decoder_out = model.cmlm_model[1](prev_output_tokens=prev_output_tokens, encoder_out=encoder_out, full_context_alignment=True)
-            lprobs = model.get_normalized_probs(decoder_out, log_probs=True)
-            lprobs = lprobs[y_mask]
 
-        return lprobs.detach(), y_mask
+        encoder_out = model.encoder(**text_input)
+        decoder_out = model.decoder(prev_output_tokens=prev_output_tokens, encoder_out=encoder_out, full_context_alignment=True)
+        lprobs = model.get_normalized_probs(decoder_out, log_probs=True)
+        lprobs = lprobs[y_mask]
+
+        return lprobs, y_mask
 
     def forward_x_cross_s(self, model, sample, reduce):
         text_input = {
