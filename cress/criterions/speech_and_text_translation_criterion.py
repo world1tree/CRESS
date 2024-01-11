@@ -66,6 +66,14 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         kl_loss = (kl_loss_st + kl_loss_mt) / 2.0
         return kl_loss
 
+    def compute_jsd_loss_no_target(self, st_lprobs, mt_lprobs):
+        kl_loss_st = F.kl_div(mt_lprobs, st_lprobs, log_target=True, reduction="none").sum(-1)
+        kl_loss_mt = F.kl_div(st_lprobs, mt_lprobs, log_target=True, reduction="none").sum(-1)
+        kl_loss_st = kl_loss_st.sum()
+        kl_loss_mt = kl_loss_mt.sum()
+        kl_loss = (kl_loss_st + kl_loss_mt) / 2.0
+        return kl_loss
+
     def compute_kl_loss(self, st_lprobs, mt_lprobs, teacher_lprobs):
         kl_loss_st = F.kl_div(st_lprobs, teacher_lprobs, log_target=True, reduction="none").sum(-1)
         kl_loss_mt = F.kl_div(mt_lprobs, teacher_lprobs, log_target=True, reduction="none").sum(-1)
@@ -104,6 +112,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
         y_mask = torch.bernoulli(probability_matrix).bool().to(masked_target.device)
         y_encoder_padding_mask = masked_target.eq(self.padding_idx)
         y_mask = y_mask & (~y_encoder_padding_mask)
+        y_nomask = (~y_mask) & (~y_encoder_padding_mask)
         # bos = 0 as <mask>
         masked_target.masked_fill_(y_mask, 0)
 
@@ -121,7 +130,7 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
             lprobs = model.get_normalized_probs(decoder_out, log_probs=True)
             lprobs = lprobs[y_mask]
 
-        return lprobs.detach(), y_mask
+        return lprobs.detach(), y_mask, y_nomask
 
     def forward_x_cross_s(self, model, sample, reduce):
         text_input = {
@@ -166,12 +175,16 @@ class SpeechAndTextTranslationCriterion(LabelSmoothedCrossEntropyCriterion):
                 # mt_loss = self.forward_mt(model, sample, reduce)
                 mt_loss, x_cross_s_lprobs, mt_target = self.forward_x_cross_s(model, sample, reduce)
                 # cmlm_loss的权重可以调整
-                cmlm_lprobs, y_mask = self.forward_cmlm(model, sample, x_cross_s_lprobs.dtype)
-                jsd_loss = self.compute_jsd_loss(st_lprobs, x_cross_s_lprobs, st_target, mt_target, self.padding_idx)
-                masked_num = y_mask.sum().item()
+                cmlm_lprobs, y_mask, y_nomask = self.forward_cmlm(model, sample, x_cross_s_lprobs.dtype)
+
                 st_lprobs_selected = st_lprobs.view(bsz, seq_len, -1)[y_mask]
                 x_cross_s_lprobs_selected = x_cross_s_lprobs.view(bsz, seq_len, -1)[y_mask]
                 kl_loss = self.compute_kl_loss(st_lprobs_selected, x_cross_s_lprobs_selected, cmlm_lprobs)
+
+                st_lprobs_for_jsd = st_lprobs.view(bsz, seq_len, -1)[y_nomask]
+                x_cross_s_lprobs_for_jd = x_cross_s_lprobs.view(bsz, seq_len, -1)[y_nomask]
+                jsd_loss = self.compute_jsd_loss_no_target(st_lprobs_for_jsd, x_cross_s_lprobs_for_jd)
+                masked_num = y_mask.sum().item()
                 loss = (st_loss + mt_loss + jsd_loss)/sample_size + (kl_loss/masked_num)
             # st(dev or train only)
             else:
