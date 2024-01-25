@@ -82,13 +82,19 @@ class SpeechAndTextTranslatioOracleRegCriterion(LabelSmoothedCrossEntropyCriteri
     
     def get_word_oracle_tokens(self, pred_logits, prev_output_tokens, epoch, epsilon=1e-6):
         bsz, _ = prev_output_tokens.size()
+        # 对原始的logits加上gumbel noise
         if self.use_word_gumbel_noise:
             uniform = torch.Tensor(pred_logits.size()).to(pred_logits.device).float().uniform_(0, 1)
             gumbel = -torch.log(-torch.log(uniform + epsilon) + epsilon)
+            # B, T, V
             pred_logits = (pred_logits + gumbel.to(pred_logits.device)) / self.gumbel_temperature
+        # B, T
         pred_tokens = torch.max(pred_logits, dim=-1)[1]
+        # B, 1, 所有数值都为bos_idx
         bos_idx = prev_output_tokens[0, 0].repeat(bsz, 1).to(pred_tokens)
+        # 恢复为预测的token维度大小
         pred_tokens = torch.cat([bos_idx, pred_tokens], dim=1)[:, :-1]
+        # 单调递减
         sample_gold_prob = self.decay_prob(epoch)
         sample_gold_prob = sample_gold_prob * torch.ones_like(prev_output_tokens, dtype=torch.float32)
         sample_gold_mask = torch.bernoulli(sample_gold_prob).long()
@@ -169,16 +175,19 @@ class SpeechAndTextTranslatioOracleRegCriterion(LabelSmoothedCrossEntropyCriteri
         2) the sample size, which is used as the denominator for the gradient
         3) logging outputs to display while training
         """
-        st_loss, mt_loss, ext_mt_loss, reg_loss = torch.Tensor([0]).cuda(), torch.Tensor([0]).cuda(), torch.Tensor([0]).cuda(), torch.Tensor([0]).cuda()
+        st_loss, mt_loss, ext_mt_loss, reg_loss = torch.Tensor([0]), torch.Tensor([0]), torch.Tensor([0]), torch.Tensor([0])
         st_size, mt_size, ext_mt_size, reg_size = 0, 0, 0, 0
 
         mode = sample["net_input"]["mode"]
         if mode == "st":
             if self.training:
                 word_oracle = self.use_word_level_oracle
+                # 1. st_loss与mt_loss都和predict进行了mix, mix gold概率随着epoch增加而减小
                 st_loss, st_lprobs, st_target = self.forward_st(model, sample, reduce, word_oracle)
                 mt_loss, mt_lprobs, mt_target = self.forward_mt(model, sample, reduce, word_oracle)
+                # 2. 计算jsd loss
                 reg_loss = self.compute_reg_loss(st_lprobs, mt_lprobs, st_target, mt_target)
+                # reg_weight=1.0
                 loss = st_loss + mt_loss + self.reg_weight * reg_loss
                 st_size = mt_size = sample_size = reg_size = sample["ntokens"]
             else:

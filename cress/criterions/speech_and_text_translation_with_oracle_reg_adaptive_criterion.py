@@ -128,6 +128,7 @@ class SpeechAndTextTranslatioOracleRegAdaptiveCriterion(LabelSmoothedCrossEntrop
         if self.use_word_gumbel_noise:
             uniform = torch.Tensor(pred_logits.size()).to(pred_logits.device).float().uniform_(0, 1)
             gumbel = -torch.log(-torch.log(uniform + epsilon) + epsilon)
+            # 这里增加了一个gumbel噪声, temperature=1.0
             pred_logits = (pred_logits + gumbel.to(pred_logits.device)) / self.gumbel_temperature
         pred_tokens = torch.max(pred_logits, dim=-1)[1]
         bos_idx = prev_output_tokens[0, 0].repeat(bsz, 1).to(pred_tokens)
@@ -166,6 +167,7 @@ class SpeechAndTextTranslatioOracleRegAdaptiveCriterion(LabelSmoothedCrossEntrop
             prev_output_tokens,
             audio_encoder_out,
         )
+        # x是最后一层的输出, dim=512, 经过output_layer后, dim=vocab_size
         x = model.decoder.output_layer(x)
         return x, extra
     
@@ -212,7 +214,7 @@ class SpeechAndTextTranslatioOracleRegAdaptiveCriterion(LabelSmoothedCrossEntrop
         2) the sample size, which is used as the denominator for the gradient
         3) logging outputs to display while training
         """
-        st_loss, mt_loss, ext_mt_loss, reg_loss = torch.Tensor([0]).cuda(), torch.Tensor([0]).cuda(), torch.Tensor([0]).cuda(), torch.Tensor([0]).cuda()
+        st_loss, mt_loss, ext_mt_loss, reg_loss = torch.Tensor([0]), torch.Tensor([0]), torch.Tensor([0]), torch.Tensor([0])
         st_size, mt_size, ext_mt_size, reg_size = 0, 0, 0, 0
 
         mode = sample["net_input"]["mode"]
@@ -221,6 +223,7 @@ class SpeechAndTextTranslatioOracleRegAdaptiveCriterion(LabelSmoothedCrossEntrop
                 word_oracle = self.use_word_level_oracle
                 st_output = self.forward_st(model, sample, reduce, word_oracle)
                 mt_output = self.forward_mt(model, sample, reduce, word_oracle)
+                # st/mt/jsd都是根据权重的变化动态调整
                 st_loss, mt_loss, reg_loss = self.compute_adaptive_loss(model, sample, st_output, mt_output, self.padding_idx, self.eps)
                 loss = st_loss + mt_loss + self.reg_weight * reg_loss
                 st_size = mt_size = sample_size = reg_size = sample["ntokens"]
@@ -252,24 +255,31 @@ class SpeechAndTextTranslatioOracleRegAdaptiveCriterion(LabelSmoothedCrossEntrop
     
     def get_adaptive_weight(self, st_output, mt_output):
         if self.adaptive_func == "linear_cosine":
+            # 其实这里以可以通过原始的x获取, 值为最后一层的decoder_state
+            # T, B, D
             st_decoder_state = st_output[1]["inner_states"][-1].detach()
             mt_decoder_state = mt_output[1]["inner_states"][-1].detach()
+            # T, B
             cosine = F.cosine_similarity(st_decoder_state, mt_decoder_state, dim=-1)
+            # 相似度约高, weight越小
             weight = 1.0 - cosine
         else:
             raise NotImplementedError
         return self.adaptive_base + self.adaptive_scale * weight
     
     def compute_adaptive_loss(self, model, sample, st_output, mt_output, ignore_index, epsilon):
+        # 根据st与mt目标端概率分布的相似度, 计算weight
         st_lprobs, target = self.get_lprobs_and_target(model, st_output, sample)
         mt_lprobs, _ = self.get_lprobs_and_target(model, mt_output, sample)
         target = target.unsqueeze(-1)
-        # get weight
+        # get weight, (B*T, 1)
         weight = self.get_adaptive_weight(st_output, mt_output).view(-1, 1)
+        # 0
         drop_p = self.adaptive_weight_drop * torch.ones_like(weight)
         drop_mask = torch.bernoulli(drop_p).bool()
+        # weight不变
         weight.masked_fill_(drop_mask, 1.0)
-        # st loss
+        # st loss, (B*T)
         st_nll_loss = -st_lprobs.gather(dim=-1, index=target)
         st_smooth_loss = -st_lprobs.sum(dim=-1, keepdim=True)
         if self.adaptive_st_loss:
